@@ -250,6 +250,17 @@ impl MikrotikAPI<Authenticated> {
         self.do_call(command, attributes, StreamingCall::new(), Some(tag))
             .await
     }
+
+    pub async fn cancel(&mut self, tag: u16) -> Response<()> {
+        self.do_call(
+            "/cancel",
+            Some(&[("tag", tag.to_string().as_str())]),
+            EmptyCall::new(),
+            None
+        )
+        .await
+        .await
+    }
 }
 
 fn encode_len(data: &str) -> Vec<u8> {
