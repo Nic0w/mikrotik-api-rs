@@ -14,8 +14,9 @@ Based on tokio and fully asynchronous, the library allows to deal with all the A
  - simple requests with one-off answers, like `/system/identity/print`,
  - simple requests with array-like answers, like `/interfaces/print`,
  - simple requests to listen to events, like `/user/active/listen`,
+ - cancel streaming commands with `/cancel`
 
-There is still much to do, like be able to cancel streams, support query words, ...
+There is still much to do, like support query words, ...
 
 ### Usage
 
@@ -28,6 +29,7 @@ Eight functions are then available:
  - `interfaces` will retrieve a list of interfaces with all their properties (``/interfaces/print``)
  - `active_users` returns a `Stream` of events regarding user activity (login & logout)
  - `interface_changes` returns a `Stream` of events regarding changes to interfaces (up, down, ...)
+ - `cancel` cancels a streaming command given its tag
  - `generic_oneshot_call` allows to call any endpoint providing a one-off answer. Thanks to type inference, answer is returned in the user's object of choice. Example:
 
 ```rust
@@ -55,8 +57,10 @@ struct Interface {
     pub running: bool
 }
 
+let mut tag: u16 = 0;
+
 let changes = api
-    .generic_streaming_call::<Interface>("/interface/listen", None);
+    .generic_streaming_call::<Interface>("/interface/listen", None, &mut tag); //`tag` allows us to cancel the stream later on.
 
 tokio::spawn(changes.for_each(|item| async move {
 
