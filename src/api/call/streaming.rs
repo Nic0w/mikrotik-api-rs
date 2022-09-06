@@ -107,7 +107,7 @@ impl<T> Stream for StreamingCall<T> {
                 return Poll::Ready(None)
             }
 
-            return inner.receiver.poll_recv(cx);
+            return next_value;
         }
 
         Poll::Pending
