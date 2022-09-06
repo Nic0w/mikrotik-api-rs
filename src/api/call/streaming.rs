@@ -99,6 +99,14 @@ impl<T> Stream for StreamingCall<T> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         if let Ok(mut inner) = self.inner.lock() {
+
+            let next_value = inner.receiver.poll_recv(cx);
+
+            if let Poll::Ready(Some(Response::Done)) = next_value {
+                // A !done reply is our End Of Stream.
+                return Poll::Ready(None)
+            }
+
             return inner.receiver.poll_recv(cx);
         }
 
