@@ -32,7 +32,6 @@ pub async fn main() {
         Identify { full } => identify::identify(&mut api, full).await,
 
         ActiveUsers => {
-
             let mut tag = 0;
 
             let stream = api.active_users(&mut tag).await;

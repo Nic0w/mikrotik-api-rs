@@ -80,7 +80,7 @@ impl<S: State> MikrotikAPI<S> {
         command: &str,
         attributes: Option<&[(&str, &str)]>,
         call_type: T,
-        future_tag: Option<&mut u16>
+        future_tag: Option<&mut u16>,
     ) -> Box<T>
     where
         T: AsyncCall + Clone + Send + Sync + 'static,
@@ -156,7 +156,7 @@ impl MikrotikAPI<Disconnected> {
                 "/login",
                 Some(&[("name", login), ("password", password)]),
                 EmptyCall::new(),
-                None
+                None,
             )
             .await;
 
@@ -182,7 +182,7 @@ impl MikrotikAPI<Authenticated> {
             "/system/resource/print",
             None,
             OneShotCall::<SystemResources>::new(),
-            None
+            None,
         )
         .await
         .await
@@ -198,12 +198,18 @@ impl MikrotikAPI<Authenticated> {
             .into()
     }
 
-    pub async fn active_users(&mut self, tag: &mut u16) -> impl Stream<Item = Response<ActiveUser>> {
+    pub async fn active_users(
+        &mut self,
+        tag: &mut u16,
+    ) -> impl Stream<Item = Response<ActiveUser>> {
         self.do_call("/user/active/listen", None, StreamingCall::new(), Some(tag))
             .await
     }
 
-    pub async fn interfaces_changes(&mut self, tag: &mut u16) -> impl Stream<Item = Response<InterfaceChange>> {
+    pub async fn interfaces_changes(
+        &mut self,
+        tag: &mut u16,
+    ) -> impl Stream<Item = Response<InterfaceChange>> {
         self.do_call("/interface/listen", None, StreamingCall::new(), Some(tag))
             .await
     }
@@ -242,7 +248,7 @@ impl MikrotikAPI<Authenticated> {
         &mut self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
-        tag: &mut u16
+        tag: &mut u16,
     ) -> impl Stream<Item = Response<T>>
     where
         T: DeserializeOwned + Debug + Sync + Send + 'static,
@@ -256,7 +262,7 @@ impl MikrotikAPI<Authenticated> {
             "/cancel",
             Some(&[("tag", tag.to_string().as_str())]),
             EmptyCall::new(),
-            None
+            None,
         )
         .await
         .await

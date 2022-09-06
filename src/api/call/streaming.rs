@@ -49,7 +49,6 @@ impl<T> StreamingCall<T> {
 
 impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
     fn push_reply(&mut self, sentence: Vec<String>) -> Result<(), CallError> {
-
         let value = deserialize_sentence(sentence.as_slice())?;
 
         if let Ok(inner) = self.inner.lock() {
@@ -62,11 +61,10 @@ impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
     }
 
     fn done(&mut self) -> Result<(), CallError> {
-
         if let Ok(mut call) = self.inner.lock() {
             call.done()?;
 
-            return Ok(())
+            return Ok(());
         }
 
         Err(CallError::BadLock)
@@ -89,12 +87,11 @@ impl<T> Stream for StreamingCall<T> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         if let Ok(mut inner) = self.inner.lock() {
-
             let next_value = inner.receiver.poll_recv(cx);
 
             if let Poll::Ready(Some(Response::Done)) = next_value {
                 // A !done reply is our End Of Stream.
-                return Poll::Ready(None)
+                return Poll::Ready(None);
             }
 
             return next_value;
