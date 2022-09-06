@@ -80,6 +80,7 @@ impl<S: State> MikrotikAPI<S> {
         command: &str,
         attributes: Option<&[(&str, &str)]>,
         call_type: T,
+        future_tag: Option<&mut u16>,
     ) -> Box<T>
     where
         T: AsyncCall + Clone + Send + Sync + 'static,
@@ -95,6 +96,10 @@ impl<S: State> MikrotikAPI<S> {
             let new_tag = tag.get_or_insert(next_tag(&mut self.tag_iter, &map));
 
             map.insert(*new_tag, boxed_call);
+        }
+
+        if let Some(mut_tag) = future_tag {
+            *mut_tag = tag.unwrap();
         }
 
         let tag_str = tag.map(|t| t.to_string()).unwrap();
@@ -151,6 +156,7 @@ impl MikrotikAPI<Disconnected> {
                 "/login",
                 Some(&[("name", login), ("password", password)]),
                 EmptyCall::new(),
+                None,
             )
             .await;
 
@@ -176,6 +182,7 @@ impl MikrotikAPI<Authenticated> {
             "/system/resource/print",
             None,
             OneShotCall::<SystemResources>::new(),
+            None,
         )
         .await
         .await
@@ -183,7 +190,7 @@ impl MikrotikAPI<Authenticated> {
     }
 
     pub async fn interfaces(&mut self) -> Result<Vec<Interface>, Error> {
-        self.do_call("/interface/print", None, ArrayListCall::new())
+        self.do_call("/interface/print", None, ArrayListCall::new(), None)
             .await
             .await
             .into_iter()
@@ -191,13 +198,19 @@ impl MikrotikAPI<Authenticated> {
             .into()
     }
 
-    pub async fn active_users(&mut self) -> impl Stream<Item = Response<ActiveUser>> {
-        self.do_call("/user/active/listen", None, StreamingCall::new())
+    pub async fn active_users(
+        &mut self,
+        tag: &mut u16,
+    ) -> impl Stream<Item = Response<ActiveUser>> {
+        self.do_call("/user/active/listen", None, StreamingCall::new(), Some(tag))
             .await
     }
 
-    pub async fn interfaces_changes(&mut self) -> impl Stream<Item = Response<InterfaceChange>> {
-        self.do_call("/interface/listen", None, StreamingCall::new())
+    pub async fn interfaces_changes(
+        &mut self,
+        tag: &mut u16,
+    ) -> impl Stream<Item = Response<InterfaceChange>> {
+        self.do_call("/interface/listen", None, StreamingCall::new(), Some(tag))
             .await
     }
 
@@ -209,7 +222,7 @@ impl MikrotikAPI<Authenticated> {
     where
         T: DeserializeOwned + Debug + Sync + Send + 'static,
     {
-        self.do_call(command, attributes, OneShotCall::<T>::new())
+        self.do_call(command, attributes, OneShotCall::<T>::new(), None)
             .await
             .await
             .into()
@@ -223,7 +236,7 @@ impl MikrotikAPI<Authenticated> {
     where
         T: DeserializeOwned + Debug + Sync + Send + 'static,
     {
-        self.do_call(command, attributes, ArrayListCall::new())
+        self.do_call(command, attributes, ArrayListCall::new(), None)
             .await
             .await
             .into_iter()
@@ -235,12 +248,24 @@ impl MikrotikAPI<Authenticated> {
         &mut self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
+        tag: &mut u16,
     ) -> impl Stream<Item = Response<T>>
     where
         T: DeserializeOwned + Debug + Sync + Send + 'static,
     {
-        self.do_call(command, attributes, StreamingCall::new())
+        self.do_call(command, attributes, StreamingCall::new(), Some(tag))
             .await
+    }
+
+    pub async fn cancel(&mut self, tag: u16) -> Response<()> {
+        self.do_call(
+            "/cancel",
+            Some(&[("tag", tag.to_string().as_str())]),
+            EmptyCall::new(),
+            None,
+        )
+        .await
+        .await
     }
 }
 
