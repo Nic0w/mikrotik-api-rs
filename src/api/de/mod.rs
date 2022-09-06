@@ -49,8 +49,6 @@ impl<'de> SentenceDeserializer<'de> {
         let next = self.cursor.next().ok_or(DeserializerError::MissingWord)?;
 
         if next.starts_with(".tag") {
-            //println!("skipping: {}", next);
-
             return self.read_word();
         }
 
@@ -58,8 +56,6 @@ impl<'de> SentenceDeserializer<'de> {
     }
 
     fn word_part(&mut self, hint: Hint) -> Result<&'de str> {
-        //println!("word_part: {:?} {:?}", hint, self.current_word);
-
         if let Some(text) = self.current_word {
             use Hint::*;
             match hint {
@@ -122,22 +118,13 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_struct: {:?}", self.current_word);
-
-        // !done
-        //self.current_word = Some(self.read_word()?);
-
         visitor.visit_map(StructVisitor { de: self })
-
-        //unimplemented!("deserialize_struct: {}->{:?}", name, fields)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_string: {:?}", self.current_word);
-
         let text = self.word_part(Hint::Value)?;
 
         visitor.visit_borrowed_str(text)
@@ -147,8 +134,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_identifier: {:?}", self.current_word);
-
         match self.current_word {
             Some("!done") => visitor.visit_borrowed_str("Done"),
             Some("!re") => visitor.visit_borrowed_str("Reply"),
@@ -173,11 +158,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        /*println!(
-            "deserialize_enum: {:?} |  {} {:?}",
-            self.current_word, _name, _variants
-        );*/
-
         self.current_word = Some(self.read_word()?);
 
         match self.current_word {
@@ -197,8 +177,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_str: {:?}", self.current_word);
-
         let text = self.word_part(Hint::Value)?;
 
         visitor.visit_borrowed_str(text)
@@ -208,8 +186,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //self.read_word()?;
-
         visitor.visit_unit()
     }
 
@@ -217,8 +193,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_ignored_any: {:?}", self.current_word);
-
         self.deserialize_unit(visitor)
     }
 
@@ -226,8 +200,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_u64: {:?}", self.current_word);
-
         visitor.visit_u64(self.parse_unsigned()?)
     }
 
@@ -263,11 +235,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        //println!("deserialize_map: {:?}", self.current_word);
-
-        // !done
-        //self.current_word = Some(self.read_word()?);
-
         visitor.visit_map(StructVisitor { de: self })
     }
 
@@ -325,11 +292,7 @@ impl<'de, 'v> MapAccess<'de> for StructVisitor<'v, 'de> {
     {
         self.de.current_word = Some(self.de.read_word()?);
 
-        //println!("StructVisitor::next_value_seed: {:?}", self.de.current_word);
-
         if let Some("") = self.de.current_word {
-            //println!("end");
-
             return Ok(None);
         }
 
@@ -340,8 +303,6 @@ impl<'de, 'v> MapAccess<'de> for StructVisitor<'v, 'de> {
     where
         V: serde::de::DeserializeSeed<'de>,
     {
-        //println!("StructVisitor::next_value_seed: {:?}", self.de.current_word);
-
         seed.deserialize(&mut *self.de)
     }
 }
@@ -359,20 +320,12 @@ impl<'de, 'v> EnumAccess<'de> for EnumVisitor<'v, 'de> {
     where
         V: serde::de::DeserializeSeed<'de>,
     {
-        //println!("EnumVisitor::variant_seed");
-
         let val = seed.deserialize(&mut *self.de)?;
-
-        //self.de.current_word = Some(self.de.read_word()?);
 
         // Parse the colon separating map key from value.
         if self.de.current_word.is_some() {
-            //println!("\t has word");
-
             Ok((val, self))
         } else {
-            //println!("\t hasn't word");
-
             Err(DeserializerError::MissingWord)
         }
     }
