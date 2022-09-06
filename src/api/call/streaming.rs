@@ -49,17 +49,11 @@ impl<T> StreamingCall<T> {
 
 impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
     fn push_reply(&mut self, sentence: Vec<String>) -> Result<(), CallError> {
-        let lock = self.inner.lock();
-
-        if let Err(e) = lock {
-            println!("r{:?}", e);
-            return Err(CallError::BadLock);
-        }
 
         let value = deserialize_sentence(sentence.as_slice())?;
 
-        if let Ok(inner) = lock {
-            inner.sender.send(value).unwrap();
+        if let Ok(inner) = self.inner.lock() {
+            let _ = inner.sender.send(value);
 
             return Ok(());
         }
@@ -68,15 +62,11 @@ impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
     }
 
     fn done(&mut self) -> Result<(), CallError> {
-        let lock = self.inner.lock();
 
-        if let Err(e) = lock {
-            println!("r{:?}", e);
-            return Err(CallError::BadLock);
-        }
-
-        if let Ok(mut call) = lock {
+        if let Ok(mut call) = self.inner.lock() {
             call.done()?;
+
+            return Ok(())
         }
 
         Err(CallError::BadLock)
