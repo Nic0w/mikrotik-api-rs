@@ -98,9 +98,29 @@ SUBCOMMANDS:
     identify        
  ```
 
-Right now it comes with two subcommands:
+Right now it comes with three subcommands:
  - `identify`: will print your router's name and its resources (with `--full`)
  - `active-users`: will listen to user activity and display events in a log-like manner
+ - `custom`, the best of all, allows to call arbitrary commands of all sorts (one-off, arraylist, streaming). Example, listening in real-time to log events:
+  
+```bash
+$ target/release/client -A 192.168.88.1:8728 -L admin -P "P@ssw0rd" custom --listen "/log/listen"
+2022-09-07T21:38:04.659Z INFO [client::custom] New event:
+{
+    ".id": "*1CB36",
+    "time": "21:38:04",
+    "message": "user admin logged in from 192.168.88.10 via web",
+    "topics": "system,info,account",
+}
+2022-09-07T21:38:05.559Z INFO [client::custom] New event:
+{
+    "topics": "firewall,info",
+    ".id": "*1CB37",
+    "time": "21:38:05",
+    "message": "BLOCKED input: in:wan(vlan42) out:(unknown 0), src-mac aa:bb:cc:dd:ee:ff, proto TCP (SYN), 1.2.3.4:42845->4.3.2.1:24032, len 40",
+}
+
+```
 
  # DISCLAIMER
 
