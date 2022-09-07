@@ -12,7 +12,7 @@ mod custom;
 
 #[tokio::main]
 pub async fn main() {
-    simple_logger::init_with_level(log::Level::Trace).unwrap();
+    simple_logger::init_with_level(log::Level::Info).unwrap();
 
     let args = Args::parse();
 

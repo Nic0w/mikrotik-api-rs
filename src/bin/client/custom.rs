@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use mikrotik_api::{MikrotikAPI, Authenticated};
+use futures::StreamExt;
+use log::info;
+use mikrotik_api::{MikrotikAPI, Authenticated, Response};
 
 
 pub enum CommandType {
@@ -19,17 +21,30 @@ pub async fn custom_command(api: &mut MikrotikAPI<Authenticated>, command: &str,
                 .await
                 .unwrap();
 
-            println!("{:#?}", map)
+            info!("Reply:\n{:#?}", map)
         },
         ArrayList => {
             let map = api.generic_array_call::<HashMap<String, String>>(command, None)
-            .await
-            .unwrap();
+                .await
+                .unwrap();
 
-        println!("{:#?}", map)
+            info!("Received {} replies:\n{:#?}", map.len(), map)
         },
 
-        Streaming => todo!(),
+        Streaming => {
+
+            let mut _tag = 0;
+            let stream = api.generic_streaming_call::<HashMap<String, String>>(command, None, &mut _tag).await;
+
+            tokio::spawn(stream.for_each(move |item| async {
+                if let Response::Reply(event) = item {
+
+                    info!("New event:\n{:#?}", event)
+                }
+            }))
+            .await
+            .unwrap();
+        },
     }
 
 }
