@@ -55,25 +55,30 @@ impl<'de> SentenceDeserializer<'de> {
         Ok(next)
     }
 
-    fn word_part(&mut self, hint: Hint) -> Result<&'de str> {
-        if let Some(text) = self.current_word {
-            use Hint::*;
-            match hint {
-                Key => {
-                    let (key, _) = text[1..]
-                        .split_once('=')
-                        .ok_or(DeserializerError::MissingKey)?;
+    fn word_part(&mut self) -> Result<&'de str> {
+        if let Some(text) = self.current_word.as_mut() {
 
-                    Ok(key)
-                }
+            let mut matches = text.match_indices('=');
 
-                Value => {
-                    let (_, value) = text[1..]
-                        .split_once('=')
-                        .ok_or(DeserializerError::MissingValue)?;
+            let first = matches.next();
+            let second = matches.next();
 
-                    Ok(value)
-                }
+            if let Some((i, _)) = second {
+                let split = text.split_at(i);
+
+                *text = split.1;
+
+                Ok(&split.0[1..])
+            } 
+            else if first.is_some() {
+                let (empty, value) = text.split_at(0);
+
+                *text = empty;
+
+                Ok(&value[1..])
+            }
+            else {
+                Err(DeserializerError::MissingWord)
             }
         } else {
             Err(DeserializerError::MissingWord)
@@ -85,7 +90,7 @@ impl<'de> SentenceDeserializer<'de> {
         T: FromStr + From<u8>,
         T::Err: std::error::Error + 'static,
     {
-        let text = self.word_part(Hint::Value)?;
+        let text = self.word_part()?;
 
         text.parse().map_err(|e| {
             DeserializerError::BadPrimitiveValue(Box::<dyn std::error::Error>::from(e))
@@ -125,7 +130,7 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let text = self.word_part(Hint::Value)?;
+        let text = self.word_part()?;
 
         visitor.visit_borrowed_str(text)
     }
@@ -141,7 +146,7 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
             Some("!fatal") => visitor.visit_borrowed_str("Fatal"),
 
             Some(_) => {
-                let text = self.word_part(Hint::Key)?;
+                let text = self.word_part()?;
                 visitor.visit_borrowed_str(text)
             }
 
@@ -177,7 +182,7 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let text = self.word_part(Hint::Value)?;
+        let text = self.word_part()?;
 
         visitor.visit_borrowed_str(text)
     }
@@ -242,7 +247,7 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        match self.word_part(Hint::Value)? {
+        match self.word_part()? {
             "true" => visitor.visit_bool(true),
             "false" => visitor.visit_bool(false),
             e => Err(DeserializerError::BadPrimitiveValue(Box::<
