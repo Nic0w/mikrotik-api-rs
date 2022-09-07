@@ -24,4 +24,17 @@ pub enum Command {
     },
 
     ActiveUsers,
+
+    Custom {
+        #[clap(long, help = "run one-off command")]
+        one_off: bool,
+
+        #[clap(long, help = "run array-list command")]
+        array_list: bool,
+
+        #[clap(long, help = "run listen command")]
+        listen: bool,
+
+        command: String
+    }
 }
