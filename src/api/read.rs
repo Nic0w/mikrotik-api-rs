@@ -20,18 +20,18 @@ fn read_len(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
     let mut data: [u8; 4] = [0; 4];
 
     if first_byte >> 6 == 0b10 {
-        data[0] = first_byte & !0xC0;
-        data[1] = next_byte()?;
+        data[2] = first_byte & !0xC0;
+        data[3] = next_byte()?;
 
-        return Ok(u32::from_ne_bytes(data));
+        return Ok(u32::from_be_bytes(data));
     }
 
     if first_byte >> 5 == 0b110 {
-        data[0] = first_byte & !0xE0;
-        data[1] = next_byte()?;
+        data[1] = first_byte & !0xE0;
         data[2] = next_byte()?;
+        data[3] = next_byte()?;
 
-        return Ok(u32::from_ne_bytes(data));
+        return Ok(u32::from_be_bytes(data));
     }
 
     if first_byte >> 4 == 0b1110 {
@@ -40,7 +40,7 @@ fn read_len(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
         data[2] = next_byte()?;
         data[3] = next_byte()?;
 
-        return Ok(u32::from_ne_bytes(data));
+        return Ok(u32::from_be_bytes(data));
     }
 
     if first_byte == 0xF0 {
@@ -49,7 +49,7 @@ fn read_len(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
         data[2] = next_byte()?;
         data[3] = next_byte()?;
 
-        return Ok(u32::from_ne_bytes(data));
+        return Ok(u32::from_be_bytes(data));
     }
 
     unreachable!()
@@ -95,4 +95,115 @@ pub fn read_sentence<'buf>(cursor: &mut Cursor<&'buf [u8]>) -> Result<Vec<&'buf 
     }
 
     Ok(sentence)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::read_len;
+
+    #[test]
+    fn test_readlen_one_byte() {
+
+        let test_value = 0x42u8;
+
+        let byte = [test_value];
+
+        let mut cursor = Cursor::new(&byte[..]);
+
+        let result = read_len(&mut cursor);
+
+        assert!(result.is_ok());
+
+        let value = result.unwrap();
+
+        assert_eq!(test_value as u32, value);
+    }
+
+    #[test]
+    fn test_readlen_two_bytes() {
+
+        let test_value = 300u16 ;
+
+        let bytes = (test_value | 0x8000).to_be_bytes();
+
+        eprintln!("{:x} {:x?}", test_value, bytes);
+
+        let mut cursor = Cursor::new(&bytes[..]);
+
+        let result = read_len(&mut cursor);
+
+        assert!(result.is_ok());
+
+        let value = result.unwrap();
+        eprintln!("{:x}", value);
+
+        assert_eq!(test_value as u32, value);
+    }
+
+    #[test]
+    fn test_readlen_three_bytes() {
+
+        let test_value = 0x4242u32;
+
+        let bytes = (test_value | 0xC00000).to_be_bytes();
+        eprintln!("{:x} {:x?}", test_value, &bytes[1..]);
+
+        let mut cursor = Cursor::new(&bytes[1..]);
+
+        let result = read_len(&mut cursor);
+
+        assert!(result.is_ok());
+
+        let value = result.unwrap();
+        eprintln!("{:x}", value);
+
+        assert_eq!(test_value as u32, value);
+    }
+
+    #[test]
+    fn test_readlen_four_bytes() {
+
+        let test_value = 0x131337u32;
+
+        let bytes = (test_value | 0xE0000000).to_be_bytes();
+        eprintln!("{:x} {:x?}", test_value, &bytes[..]);
+
+        let mut cursor = Cursor::new(&bytes[..]);
+
+        let result = read_len(&mut cursor);
+
+        assert!(result.is_ok());
+
+        let value = result.unwrap();
+        eprintln!("{:x}", value);
+
+        assert_eq!(test_value as u32, value);
+    }
+
+    #[test]
+    fn test_readlen_five_bytes() {
+
+        let test_value = 0xAABBCCDDu32;
+
+        let mut bytes = test_value.to_be_bytes().to_vec();
+
+        bytes.insert(0, 0xF0);
+
+        eprintln!("{:x} {:x?}", test_value, &bytes[..]);
+
+        let mut cursor = Cursor::new(&bytes[..]);
+
+        let result = read_len(&mut cursor);
+
+        assert!(result.is_ok());
+
+        let value = result.unwrap();
+        eprintln!("{:x}", value);
+
+        assert_eq!(test_value as u32, value);
+    }
+
 }
