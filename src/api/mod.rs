@@ -60,9 +60,19 @@ impl<S: State> MikrotikAPI<S> {
         sentence.push(command.to_owned());
 
         for (key, value) in attributes {
-            if key.starts_with('.') {
+
+            if key.starts_with('?') { 
+
+                if value.is_empty() {
+                    sentence.push(key.to_string());
+                }
+                else {
+                    sentence.push(format!("{}={}", key, value));
+                }
+            }
+            else if key.starts_with('.') { //.proplist, .tag
                 sentence.push(format!("{}={}", key, value));
-            } else {
+            } else { // everything else (attributes)
                 sentence.push(format!("={}={}", key, value));
             }
         }
