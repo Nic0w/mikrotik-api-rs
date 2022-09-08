@@ -278,12 +278,6 @@ impl<'de, 'v> SeqAccess<'de> for SeqVisitor<'v, 'de> {
     }
 }
 
-#[derive(Debug)]
-enum Hint {
-    Key,
-    Value,
-}
-
 struct StructVisitor<'v, 'de: 'v> {
     pub de: &'v mut SentenceDeserializer<'de>,
 }
