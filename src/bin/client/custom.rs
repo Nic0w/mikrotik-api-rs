@@ -44,6 +44,7 @@ pub async fn custom_command(api: &mut MikrotikAPI<Authenticated>, cmd_type: Comm
             let mut _tag = 0;
             let stream = api.generic_streaming_call::<HashMap<String, String>>(command, attributes, &mut _tag).await;
 
+            info!("Listening for events...");
             tokio::spawn(stream.for_each(move |item| async {
                 if let Response::Reply(event) = item {
 
