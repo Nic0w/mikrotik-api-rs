@@ -35,6 +35,9 @@ pub enum Command {
         #[clap(long, help = "run listen command")]
         listen: bool,
 
+        #[clap(short, long, help = "set .proplist")]
+        proplist: Option<String>,
+
         command: String
     }
 }

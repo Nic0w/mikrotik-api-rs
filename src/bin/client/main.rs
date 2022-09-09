@@ -32,7 +32,7 @@ pub async fn main() {
     match args.command {
         Identify { full } => identify::identify(&mut api, full).await,
 
-        Custom { one_off, array_list, listen, command } => {
+        Custom { one_off, array_list, listen, proplist, command } => {
 
             let cmd_type = match (one_off, array_list, listen) {
 
@@ -48,7 +48,7 @@ pub async fn main() {
                 }
             };
 
-            custom::custom_command(&mut api, &command, cmd_type).await;
+            custom::custom_command(&mut api, cmd_type, &command, proplist).await;
         },
 
         ActiveUsers => {

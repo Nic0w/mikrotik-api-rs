@@ -70,7 +70,7 @@ impl<S: State> MikrotikAPI<S> {
                     sentence.push(format!("{}={}", key, value));
                 }
             }
-            else if key.starts_with('.') { //.proplist, .tag
+            else if key.starts_with(&['.', '=']) { //.proplist, .tag
                 sentence.push(format!("{}={}", key, value));
             } else { // everything else (attributes)
                 sentence.push(format!("={}={}", key, value));
@@ -114,7 +114,7 @@ impl<S: State> MikrotikAPI<S> {
 
         let tag_str = tag.map(|t| t.to_string()).unwrap();
 
-        attributes.push((".tag", &tag_str));
+        attributes.insert(0,(".tag", &tag_str));
 
         debug!("do_call: {}", command);
         trace!("do_call: {:?}", attributes);
