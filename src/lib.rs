@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 use std::io::{self};
 
 use tokio::net::{TcpStream, ToSocketAddrs};
