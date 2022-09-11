@@ -266,8 +266,8 @@ impl MikrotikAPI<Authenticated> {
             .into()
     }
 
-    /// Allows to generate a stream of events for `listen` endpoints
-    /// takes a mutable `tag` argument that allows to stop (cancel) the stream afterwards 
+    /// Allows to generate a stream of events for `listen` endpoints.
+    /// Takes a mutable `tag` argument that allows to stop (cancel) the stream afterwards 
     pub async fn generic_streaming_call<T>(
         &mut self,
         command: &str,
@@ -281,8 +281,8 @@ impl MikrotikAPI<Authenticated> {
             .await
     }
 
-    /// Calls `/cancel` on a specific tag
-    /// primary usage is to stop `listen` commands
+    /// Calls `/cancel` on a specific tag.
+    /// Primary usage is to stop `listen` commands
     pub async fn cancel(&mut self, tag: u16) -> Response<()> {
         self.do_call(
             "/cancel",
