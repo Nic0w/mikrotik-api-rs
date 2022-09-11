@@ -1,7 +1,14 @@
 [package]
 name = "mikrotik_api"
-version = "0.2.0"
+description = "Rust library & minimal client to connect and interact with Mikrotik RouterOS API, usually exposed on port 8728"
+categories = ["api-bindings", "asynchronous", "command-line-utilities"]
+keyword = ["mikrotik", "routeros", "api", "async", "cli"]
+version = "0.2.1"
 edition = "2021"
+license-file = "LICENSE"
+readme = "README.md"
+repository = "https://github.com/Nic0w/mikrotik-api-rs"
+homepage = "https://github.com/Nic0w/mikrotik-api-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
