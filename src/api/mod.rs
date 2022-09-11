@@ -31,7 +31,10 @@ mod read;
 
 pub trait State {}
 
+/// API in disconnected state: socket is connected but user has not yet completed its authentification.
 pub struct Disconnected;
+
+/// API in authenticated state: user has access to the full api.
 pub struct Authenticated;
 
 impl State for Disconnected {}
@@ -41,6 +44,7 @@ pub type TagMap = HashMap<u16, Box<dyn AsyncCall + Send + Sync>>;
 
 pub type SharedTagMap = Arc<Mutex<TagMap>>;
 
+/// Struct to interact with Mikrotik RouterOS API on port 8728
 pub struct MikrotikAPI<S: State> {
     output: BufWriter<OwnedWriteHalf>,
     tag_map: SharedTagMap,
@@ -85,7 +89,7 @@ impl<S: State> MikrotikAPI<S> {
         Ok(())
     }
 
-    pub async fn do_call<'a, T>(
+    async fn do_call<'a, T>(
         &mut self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
@@ -128,7 +132,7 @@ impl<S: State> MikrotikAPI<S> {
 }
 
 impl MikrotikAPI<Disconnected> {
-    pub fn new(socket: TcpStream) -> Self {
+    pub(crate) fn new(socket: TcpStream) -> Self {
         let (sock_read, sock_write) = socket.into_split();
 
         let output = BufWriter::new(sock_write);
@@ -156,6 +160,7 @@ impl MikrotikAPI<Disconnected> {
         }
     }
 
+    /// Authenticate user with its login & password
     pub async fn authenticate(
         mut self,
         login: &str,
@@ -187,6 +192,8 @@ impl MikrotikAPI<Disconnected> {
 }
 
 impl MikrotikAPI<Authenticated> {
+
+    /// Get details of the remote router such as architecture, processor, RAM, ...
     pub async fn system_resources(&mut self) -> Result<SystemResources, Error> {
         self.do_call(
             "/system/resource/print",
@@ -199,6 +206,7 @@ impl MikrotikAPI<Authenticated> {
         .into()
     }
 
+    /// List interfaces and their state in great details
     pub async fn interfaces(&mut self) -> Result<Vec<Interface>, Error> {
         self.do_call("/interface/print", None, ArrayListCall::new(), None)
             .await
@@ -208,6 +216,7 @@ impl MikrotikAPI<Authenticated> {
             .into()
     }
 
+    /// Listen to user activity in terms of login/logout
     pub async fn active_users(
         &mut self,
         tag: &mut u16,
@@ -216,6 +225,7 @@ impl MikrotikAPI<Authenticated> {
             .await
     }
 
+    /// Listen to interface changes (up, down, ...)
     pub async fn interfaces_changes(
         &mut self,
         tag: &mut u16,
@@ -224,6 +234,7 @@ impl MikrotikAPI<Authenticated> {
             .await
     }
 
+    /// Allows to call generic commands returning a one-off response
     pub async fn generic_oneshot_call<T>(
         &mut self,
         command: &str,
@@ -238,6 +249,7 @@ impl MikrotikAPI<Authenticated> {
             .into()
     }
 
+    /// Allows to call generic commands returning a finite amount of items
     pub async fn generic_array_call<T>(
         &mut self,
         command: &str,
@@ -254,6 +266,8 @@ impl MikrotikAPI<Authenticated> {
             .into()
     }
 
+    /// Allows to generate a stream of events for `listen` endpoints
+    /// takes a mutable `tag` argument that allows to stop (cancel) the stream afterwards 
     pub async fn generic_streaming_call<T>(
         &mut self,
         command: &str,
@@ -267,6 +281,8 @@ impl MikrotikAPI<Authenticated> {
             .await
     }
 
+    /// Calls `/cancel` on a specific tag
+    /// primary usage is to stop `listen` commands
     pub async fn cancel(&mut self, tag: u16) -> Response<()> {
         self.do_call(
             "/cancel",
