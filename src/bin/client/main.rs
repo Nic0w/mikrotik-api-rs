@@ -49,7 +49,7 @@ pub async fn main() {
                 _ => {
                     let mut cmd = Args::command();
                     cmd.error(
-                        clap::ErrorKind::ArgumentConflict,
+                        clap::error::ErrorKind::ArgumentConflict,
                         "Arguments are mutualy exculisve",
                     )
                     .exit();
