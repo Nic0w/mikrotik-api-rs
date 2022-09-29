@@ -29,7 +29,8 @@ pub enum Response<T> {
     Fatal,
 }
 
-/// Possible values for !trap `category`
+/// Possible values for !trap `category`.
+/// From https://wiki.mikrotik.com/wiki/Manual:API#category
 #[derive(Debug)]
 #[repr(u8)]
 pub enum TrapCategory {
