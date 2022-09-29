@@ -10,7 +10,6 @@ use super::error::Error;
 /// A response to a command, sent by the router.
 #[derive(Debug, Deserialize)]
 pub enum Response<T> {
-
     /// `!done` sentence, indicating end of reply or stream
     Done,
 
@@ -21,13 +20,60 @@ pub enum Response<T> {
     Trap {
         /// Type of error
         /// TODO: make an enum, as possible values are well-known
-        category: Option<u32>,
-        
+        category: Option<TrapCategory>,
+
         /// Error message, to be shown to the user
         message: String,
     },
     /// `!fatal` sentence. A !fatal word is succeded by a simple string being the error message.
     Fatal,
+}
+
+/// Possible values for !trap `category`.
+/// From https://wiki.mikrotik.com/wiki/Manual:API#category
+#[derive(Debug)]
+#[repr(u8)]
+pub enum TrapCategory {
+    /// 0 - missing item or command
+    MissingItemOrCommand = 0,
+
+    /// 1 - argument value failure
+    ArgumentValueFailure = 1,
+
+    /// 2 - execution of command interrupted
+    CommandExecutionInterrupted = 2,
+
+    /// 3 - scripting related failure
+    ScriptingFailure = 3,
+
+    /// 4 - general failure
+    GeneralFailure = 4,
+
+    /// 5 - API related failure
+    APIFailure = 5,
+
+    /// 6 - TTY related failure
+    TTYFailure = 6,
+
+    /// 7 - value generated with :return command
+    ReturnValue = 7,
+}
+
+impl<'de> Deserialize<'de> for TrapCategory {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match u8::deserialize(deserializer)? {
+            //Safe because enum is repr(u8) and range is valid (from 0 to 7 inclusive)
+            category @ 0..=7 => unsafe { Ok(core::mem::transmute(category)) },
+
+            unknown => Err(de::Error::invalid_value(
+                serde::de::Unexpected::Unsigned(unknown.into()),
+                &"a known trap category",
+            )),
+        }
+    }
 }
 
 impl<T> From<Response<T>> for Result<T, Error> {
