@@ -64,19 +64,17 @@ impl<S: State> MikrotikAPI<S> {
         sentence.push(command.to_owned());
 
         for (key, value) in attributes {
-
-            if key.starts_with('?') { 
-
+            if key.starts_with('?') {
                 if value.is_empty() {
                     sentence.push(key.to_string());
-                }
-                else {
+                } else {
                     sentence.push(format!("{}={}", key, value));
                 }
-            }
-            else if key.starts_with(&['.', '=']) { //.proplist, .tag
+            } else if key.starts_with(&['.', '=']) {
+                //.proplist, .tag
                 sentence.push(format!("{}={}", key, value));
-            } else { // everything else (attributes)
+            } else {
+                // everything else (attributes)
                 sentence.push(format!("={}={}", key, value));
             }
         }
@@ -118,7 +116,7 @@ impl<S: State> MikrotikAPI<S> {
 
         let tag_str = tag.map(|t| t.to_string()).unwrap();
 
-        attributes.insert(0,(".tag", &tag_str));
+        attributes.insert(0, (".tag", &tag_str));
 
         debug!("do_call: {}", command);
         trace!("do_call: {:?}", attributes);
@@ -192,7 +190,6 @@ impl MikrotikAPI<Disconnected> {
 }
 
 impl MikrotikAPI<Authenticated> {
-
     /// Get details of the remote router such as architecture, processor, RAM, ...
     pub async fn system_resources(&mut self) -> Result<SystemResources, Error> {
         self.do_call(
@@ -267,7 +264,7 @@ impl MikrotikAPI<Authenticated> {
     }
 
     /// Allows to generate a stream of events for `listen` endpoints.
-    /// Takes a mutable `tag` argument that allows to stop (cancel) the stream afterwards 
+    /// Takes a mutable `tag` argument that allows to stop (cancel) the stream afterwards
     pub async fn generic_streaming_call<T>(
         &mut self,
         command: &str,

@@ -57,7 +57,6 @@ impl<'de> SentenceDeserializer<'de> {
 
     fn word_part(&mut self) -> Result<&'de str> {
         if let Some(text) = self.current_word.as_mut() {
-
             let mut matches = text.match_indices('=');
 
             let first = matches.next();
@@ -69,15 +68,13 @@ impl<'de> SentenceDeserializer<'de> {
                 *text = split.1;
 
                 Ok(&split.0[1..])
-            } 
-            else if first.is_some() {
+            } else if first.is_some() {
                 let (empty, value) = text.split_at(0);
 
                 *text = empty;
 
                 Ok(&value[1..])
-            }
-            else {
+            } else {
                 Err(DeserializerError::MissingWord)
             }
         } else {

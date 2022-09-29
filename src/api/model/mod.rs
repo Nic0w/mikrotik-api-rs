@@ -112,7 +112,6 @@ impl<A, V: FromIterator<A>> FromIterator<Response<A>> for Response<V> {
     }
 }
 
-
 /// Reply from `/system/resource/print` command
 #[allow(missing_docs)]
 #[derive(Debug, Deserialize)]
@@ -160,7 +159,6 @@ pub struct ActiveUserRaw {
 /// An event to describe user activity in terms of logins and logouts
 #[derive(Debug)]
 pub enum ActiveUser {
-
     /// Logout event, the String being the relative id of the user who logged out.
     Dead(String),
 
@@ -224,7 +222,6 @@ impl<'de> Deserialize<'de> for ActiveUser {
     }
 }
 
-
 /// Incomplete reply from `/system/interface/listen` command
 /// That may in fact be the same struct as `Interface`
 #[allow(missing_docs)]
@@ -233,7 +230,6 @@ pub struct InterfaceChange {
     #[serde(rename = ".id")]
     pub id: String,
 }
-
 
 /// Reply from `/system/interface/print` command
 #[allow(missing_docs)]
@@ -274,7 +270,6 @@ pub struct Interface {
 
     pub disabled: bool,
 }
-
 
 /// Enum to represent the `mtu` field that can take either a number value or a text: 'auto'
 #[derive(Debug)]

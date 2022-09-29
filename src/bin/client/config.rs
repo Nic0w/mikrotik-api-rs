@@ -38,6 +38,6 @@ pub enum Command {
         #[clap(short, long, help = "set .proplist")]
         proplist: Option<String>,
 
-        command: String
-    }
+        command: String,
+    },
 }

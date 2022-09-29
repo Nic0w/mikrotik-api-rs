@@ -1,4 +1,4 @@
-use clap::{Parser, CommandFactory};
+use clap::{CommandFactory, Parser};
 use futures::StreamExt;
 use log::info;
 
@@ -7,8 +7,8 @@ use mikrotik_api::{self, Response};
 use crate::{config::Args, custom::CommandType};
 
 mod config;
-mod identify;
 mod custom;
+mod identify;
 
 #[tokio::main]
 pub async fn main() {
@@ -32,10 +32,14 @@ pub async fn main() {
     match args.command {
         Identify { full } => identify::identify(&mut api, full).await,
 
-        Custom { one_off, array_list, listen, proplist, command } => {
-
+        Custom {
+            one_off,
+            array_list,
+            listen,
+            proplist,
+            command,
+        } => {
             let cmd_type = match (one_off, array_list, listen) {
-
                 (true, false, false) => CommandType::OneOff,
 
                 (false, true, false) => CommandType::ArrayList,
@@ -44,12 +48,16 @@ pub async fn main() {
 
                 _ => {
                     let mut cmd = Args::command();
-                    cmd.error(clap::ErrorKind::ArgumentConflict, "Arguments are mutualy exculisve").exit();
+                    cmd.error(
+                        clap::ErrorKind::ArgumentConflict,
+                        "Arguments are mutualy exculisve",
+                    )
+                    .exit();
                 }
             };
 
             custom::custom_command(&mut api, cmd_type, &command, proplist).await;
-        },
+        }
 
         ActiveUsers => {
             let mut tag = 0;

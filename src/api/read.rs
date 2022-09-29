@@ -97,7 +97,6 @@ pub fn read_sentence<'buf>(cursor: &mut Cursor<&'buf [u8]>) -> Result<Vec<&'buf 
     Ok(sentence)
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -106,7 +105,6 @@ mod tests {
 
     #[test]
     fn test_readlen_one_byte() {
-
         let test_value = 0x42u8;
 
         let byte = [test_value];
@@ -124,8 +122,7 @@ mod tests {
 
     #[test]
     fn test_readlen_two_bytes() {
-
-        let test_value = 300u16 ;
+        let test_value = 300u16;
 
         let bytes = (test_value | 0x8000).to_be_bytes();
 
@@ -145,7 +142,6 @@ mod tests {
 
     #[test]
     fn test_readlen_three_bytes() {
-
         let test_value = 0x4242u32;
 
         let bytes = (test_value | 0xC00000).to_be_bytes();
@@ -165,7 +161,6 @@ mod tests {
 
     #[test]
     fn test_readlen_four_bytes() {
-
         let test_value = 0x131337u32;
 
         let bytes = (test_value | 0xE0000000).to_be_bytes();
@@ -185,7 +180,6 @@ mod tests {
 
     #[test]
     fn test_readlen_five_bytes() {
-
         let test_value = 0xAABBCCDDu32;
 
         let mut bytes = test_value.to_be_bytes().to_vec();
@@ -205,5 +199,4 @@ mod tests {
 
         assert_eq!(test_value as u32, value);
     }
-
 }

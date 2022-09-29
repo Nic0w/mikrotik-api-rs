@@ -1,6 +1,6 @@
 //! # Library and minimal client for RouterOS' proprietary API
-//! 
-//! Mikrotik RouterOS exposes on port TCP/8278 a semi-textual API composed of words and sentences. 
+//!
+//! Mikrotik RouterOS exposes on port TCP/8278 a semi-textual API composed of words and sentences.
 //! This API allow power-users to request data about the router state, set configuration, listen to some events, ... using a syntax similar to the one used in the CLI.
 //!
 //! For a more in-depth description of the API, please see the [official Mikrotik wiki](https://wiki.mikrotik.com/wiki/Manual:API).  
