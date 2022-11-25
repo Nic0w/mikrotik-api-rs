@@ -10,7 +10,7 @@ pub struct Args {
     pub login: String,
 
     #[clap(short = 'P', long)]
-    pub password: String,
+    pub password: Option<String>,
 
     #[clap(subcommand)]
     pub command: Command,
