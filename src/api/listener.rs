@@ -86,15 +86,17 @@ pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap)
 
                 if let Some((frame_type, id)) = tuple {
                     if let Ok(mut guarded_map) = tags.lock() {
-                        if let Some(caller) = guarded_map.get_mut(&id) {
-                            match frame_type {
-                                Reply => {
+                        match frame_type {
+                            Reply => {
+                                if let Some(caller) = guarded_map.get_mut(&id) {
                                     if let Err(e) = caller.push_reply(sentence) {
                                         error!("on push_reply: {:?}", e);
                                         break;
                                     }
                                 }
-                                Done => {
+                            }
+                            Done => {
+                                if let Some(mut caller) = guarded_map.remove(&id) {
                                     if let Err(e) = caller.done() {
                                         error!("on done: {:?}", e);
                                         break;
@@ -299,5 +301,65 @@ mod tests {
             .await
             .expect("StreamingCall timed out on !done-only frame");
         assert!(stream_item.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_removes_completed_tags_from_shared_tag_map() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<()>::new();
+        let array = ArrayListCall::<()>::new();
+
+        let mut map = TagMap::new();
+        map.insert(10, Box::new(oneshot.clone()));
+        map.insert(20, Box::new(array.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        assert_eq!(shared_map.lock().unwrap().len(), 2);
+        assert!(shared_map.lock().unwrap().contains_key(&10));
+        assert!(shared_map.lock().unwrap().contains_key(&20));
+
+        // Send `!re` followed by `!done` for tag 20
+        // `!re .tag=20`
+        client_write.write_all(&[3]).await.unwrap();
+        client_write.write_all(b"!re").await.unwrap();
+        client_write.write_all(&[7]).await.unwrap();
+        client_write.write_all(b".tag=20").await.unwrap();
+        client_write.write_all(&[0]).await.unwrap();
+
+        // `!done .tag=20`
+        client_write.write_all(&[5]).await.unwrap();
+        client_write.write_all(b"!done").await.unwrap();
+        client_write.write_all(&[7]).await.unwrap();
+        client_write.write_all(b".tag=20").await.unwrap();
+        client_write.write_all(&[0]).await.unwrap();
+
+        // Tag 20 resolves
+        let array_res = timeout(Duration::from_secs(1), array)
+            .await
+            .expect("ArrayListCall timed out");
+        assert_eq!(array_res.len(), 1);
+
+        // Tag 20 MUST be removed from shared_map, Tag 10 must still be present
+        assert_eq!(shared_map.lock().unwrap().len(), 1);
+        assert!(!shared_map.lock().unwrap().contains_key(&20));
+        assert!(shared_map.lock().unwrap().contains_key(&10));
+
+        // Now send `!done .tag=10`
+        client_write.write_all(&[5]).await.unwrap();
+        client_write.write_all(b"!done").await.unwrap();
+        client_write.write_all(&[7]).await.unwrap();
+        client_write.write_all(b".tag=10").await.unwrap();
+        client_write.write_all(&[0]).await.unwrap();
+
+        let _ = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out");
+
+        // Now shared_map MUST be completely empty (0 entries)
+        assert_eq!(shared_map.lock().unwrap().len(), 0);
+        assert!(shared_map.lock().unwrap().is_empty());
     }
 }

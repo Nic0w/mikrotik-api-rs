@@ -527,3 +527,59 @@ async fn test_oneshot_call_with_empty_reply_does_not_panic() {
 
     assert!(!identity.name.is_empty());
 }
+
+/// Verifies that completed requests (OneShotCall, ArrayListCall) and cancelled streams
+/// are cleanly removed from the internal `SharedTagMap`, preventing memory leaks and
+/// tag space exhaustion (Issue #5).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_tag_map_cleaned_up_after_commands_and_cancel() {
+    let mut api = connect_and_login().await;
+
+    // After login, tag_map should have 0 active calls.
+    assert_eq!(api.active_calls_count(), 0);
+
+    // 1. Run multiple oneshot calls sequentially
+    for _ in 0..10 {
+        let identity = timeout(
+            Duration::from_secs(5),
+            api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+        )
+        .await
+        .expect("timed out fetching identity")
+        .expect("failed to fetch identity");
+        assert!(!identity.name.is_empty());
+
+        // Each call should be removed upon completion
+        assert_eq!(api.active_calls_count(), 0);
+    }
+
+    // 2. Run an array call
+    let ifaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>("/interface/print", None),
+    )
+    .await
+    .expect("timed out fetching interfaces")
+    .expect("failed to fetch interfaces");
+    assert!(!ifaces.is_empty());
+    assert_eq!(api.active_calls_count(), 0);
+
+    // 3. Start a streaming listener: tag_map active calls should increase to 1
+    let mut stream_tag = 0u16;
+    let _stream = api.interfaces_changes(&mut stream_tag).await;
+    assert_eq!(api.active_calls_count(), 1);
+
+    // 4. Cancel the stream: RouterOS will reply with !trap/!done on stream_tag,
+    // and !done on cancel_tag. Both should be removed, active calls back to 0.
+    let _cancel_res = timeout(Duration::from_secs(5), api.cancel(stream_tag))
+        .await
+        .expect("timed out cancelling stream");
+
+    // Wait briefly if needed for RouterOS to finish sending the stream's !done
+    let start = std::time::Instant::now();
+    while api.active_calls_count() > 0 && start.elapsed() < Duration::from_secs(2) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(api.active_calls_count(), 0);
+}

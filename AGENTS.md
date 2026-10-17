@@ -172,10 +172,8 @@ Previously, `res.copy_from_slice(...)` was called on empty `vec![]` (causing pan
 Previously, `cx.waker().wake_by_ref()` was called unconditionally inside `poll()`, causing Tokio worker threads to busy-spin at 100% CPU while waiting for a reply. This was resolved by storing `Option<Waker>` in `InnerCall` (`register_waker`) and waking it only when `done()` is triggered.
 
 
-### 3. Tag Map Memory Leak
-- Completed calls are never removed from `SharedTagMap`.
-- `done()` notifies the future/channel, but does not remove the `tag` entry from `HashMap<u16, ...>`.
-- Over long runtimes with many commands, `tag_map` will grow indefinitely and eventually exhaust available `u16` tag space.
+### 3. [RESOLVED in #5] Tag Map Memory Leak
+Previously, completed calls were never removed from `SharedTagMap` in `event_loop` on `!done`, causing unbounded memory growth and eventually exhausting the `u16` tag space. This was resolved by removing tags from `SharedTagMap` upon receiving `FrameType::Done` in `event_loop`, and adding tag exhaustion protection with deterministic linear scan fallback in `next_tag`.
 
 ### 4. Failing Doctests in `src/lib.rs`
 - The code blocks in `src/lib.rs` documentation are missing imports, have typo `Reponse` instead of `Response`, and lack an async runtime runner.
