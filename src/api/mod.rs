@@ -231,6 +231,14 @@ impl MikrotikAPI<Authenticated> {
             .await
     }
 
+    /// Alias for [`interfaces_changes`](Self::interfaces_changes) to listen to interface changes (up, down, ...)
+    pub async fn interface_changes(
+        &mut self,
+        tag: &mut u16,
+    ) -> impl Stream<Item = Response<InterfaceChange>> {
+        self.interfaces_changes(tag).await
+    }
+
     /// Allows to call generic commands returning a one-off response
     pub async fn generic_oneshot_call<T>(
         &mut self,
