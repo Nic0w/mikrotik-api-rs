@@ -31,7 +31,7 @@ pub enum Response<T> {
 
 /// Possible values for !trap `category`.
 /// From https://wiki.mikrotik.com/wiki/Manual:API#category
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TrapCategory {
     /// 0 - missing item or command

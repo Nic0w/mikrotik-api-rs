@@ -122,7 +122,7 @@ let resources = api.system_resources().await?;
 ### 4.4 Serde Deserialization Pipeline (`src/api/de/`)
 - `SentenceDeserializer<'de>` is a custom `serde::Deserializer` that walks a slice of sentence strings (`&[String]`).
 - Converts sentence headers (`!re`, `!done`, `!trap`) into the `Response<T>` enum variants.
-- Extracts key-value pairs (`=key=value`) into struct fields or map entries.
+- Extracts key-value pairs (`=key=value`) into struct fields or map entries, safely preserving any `=` characters within attribute values.
 - Automatically ignores `.tag` words during field decoding.
 
 ---

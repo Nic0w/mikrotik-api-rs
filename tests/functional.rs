@@ -583,3 +583,59 @@ async fn test_tag_map_cleaned_up_after_commands_and_cancel() {
     }
     assert_eq!(api.active_calls_count(), 0);
 }
+
+/// Verifies that deserialization handles attribute values containing '=' characters,
+/// and that HashMap and Trap deserialization work properly against the live router (Issue #6).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_deserialize_hashmap_and_trap_with_equals() {
+    use std::collections::HashMap;
+
+    let mut api = connect_and_login().await;
+
+    // 1. Fetch system resources as a generic HashMap<String, String>
+    let res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<HashMap<String, String>>("/system/resource/print", None),
+    )
+    .await
+    .expect("timed out fetching system resources as HashMap")
+    .expect("failed to deserialize system resources into HashMap");
+
+    assert!(
+        res.contains_key("uptime"),
+        "HashMap should contain 'uptime'"
+    );
+    assert!(
+        res.contains_key("version"),
+        "HashMap should contain 'version'"
+    );
+    println!("Fetched resources as HashMap: {} entries", res.len());
+
+    // 2. Trigger a trap from the router with an '=' sign in the parameters/command
+    let trap_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<()>(
+            "/system/identity/set",
+            Some(&[("name", "test=val=with=multiple=equals=signs")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for trap response");
+
+    assert!(
+        trap_res.is_err(),
+        "expected error response from unauthorized set with equals"
+    );
+
+    // 3. Verify connection and deserializer remain in a healthy state for subsequent commands
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out fetching identity after trap")
+    .expect("subsequent call failed after trap with equals");
+
+    assert!(!identity.name.is_empty());
+}

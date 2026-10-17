@@ -27,6 +27,8 @@ pub struct SentenceDeserializer<'de> {
     cursor: &'de mut Iter<'de, String>,
 
     current_word: Option<&'de str>,
+    current_key: Option<&'de str>,
+    current_value: Option<&'de str>,
 }
 
 impl<'de> SentenceDeserializer<'de> {
@@ -36,10 +38,12 @@ impl<'de> SentenceDeserializer<'de> {
         SentenceDeserializer {
             cursor: iter,
             current_word: None,
+            current_key: None,
+            current_value: None,
         }
     }
 
-    pub fn inner(&self) -> &Iter<String> {
+    pub fn inner(&self) -> &Iter<'de, String> {
         self.cursor
     }
 }
@@ -55,28 +59,23 @@ impl<'de> SentenceDeserializer<'de> {
         Ok(next)
     }
 
+    fn set_key_value(&mut self, word: &'de str) {
+        self.current_word = None;
+        let trimmed = word.strip_prefix('=').unwrap_or(word);
+        if let Some((key, value)) = trimmed.split_once('=') {
+            self.current_key = Some(key);
+            self.current_value = Some(value);
+        } else {
+            self.current_key = Some(trimmed);
+            self.current_value = Some("");
+        }
+    }
+
     fn word_part(&mut self) -> Result<&'de str> {
-        if let Some(text) = self.current_word.as_mut() {
-            let mut matches = text.match_indices('=');
-
-            let first = matches.next();
-            let second = matches.next();
-
-            if let Some((i, _)) = second {
-                let split = text.split_at(i);
-
-                *text = split.1;
-
-                Ok(&split.0[1..])
-            } else if first.is_some() {
-                let (empty, value) = text.split_at(0);
-
-                *text = empty;
-
-                Ok(&value[1..])
-            } else {
-                Err(DeserializerError::MissingWord)
-            }
+        if let Some(key) = self.current_key.take() {
+            Ok(key)
+        } else if let Some(value) = self.current_value.take() {
+            Ok(value)
         } else {
             Err(DeserializerError::MissingWord)
         }
@@ -95,7 +94,7 @@ impl<'de> SentenceDeserializer<'de> {
     }
 }
 
-impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
+impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     type Error = DeserializerError;
 
     forward_to_deserialize_any! {
@@ -142,12 +141,10 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
             Some("!trap") => visitor.visit_borrowed_str("Trap"),
             Some("!fatal") => visitor.visit_borrowed_str("Fatal"),
 
-            Some(_) => {
+            _ => {
                 let text = self.word_part()?;
                 visitor.visit_borrowed_str(text)
             }
-
-            _ => Err(DeserializerError::MissingWord),
         }
     }
 
@@ -160,18 +157,15 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.current_word = Some(self.read_word()?);
+        let word = self.read_word()?;
+        self.current_word = Some(word);
 
-        match self.current_word {
-            Some("!done") => visitor.visit_enum("Done".into_deserializer()),
+        match word.as_str() {
+            "!done" => visitor.visit_enum("Done".into_deserializer()),
 
-            Some("!re") | Some("!trap") | Some("!fatal") => {
-                visitor.visit_enum(EnumVisitor { de: self })
-            }
+            "!re" | "!trap" | "!fatal" => visitor.visit_enum(EnumVisitor { de: self }),
 
-            Some(variant) => visitor.visit_enum(variant.into_deserializer()),
-
-            _ => Err(DeserializerError::MissingWord),
+            variant => visitor.visit_enum(variant.into_deserializer()),
         }
     }
 
@@ -195,6 +189,7 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        let _ = self.current_value.take();
         self.deserialize_unit(visitor)
     }
 
@@ -245,8 +240,8 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
         V: Visitor<'de>,
     {
         match self.word_part()? {
-            "true" => visitor.visit_bool(true),
-            "false" => visitor.visit_bool(false),
+            "true" | "yes" => visitor.visit_bool(true),
+            "false" | "no" => visitor.visit_bool(false),
             e => Err(DeserializerError::BadPrimitiveValue(Box::<
                 dyn std::error::Error,
             >::from(e))),
@@ -265,11 +260,13 @@ impl<'de, 'v> MapAccess<'de> for StructVisitor<'v, 'de> {
     where
         K: serde::de::DeserializeSeed<'de>,
     {
-        self.de.current_word = Some(self.de.read_word()?);
+        let word = self.de.read_word()?;
 
-        if let Some("") = self.de.current_word {
+        if word.is_empty() {
             return Ok(None);
         }
+
+        self.de.set_key_value(word);
 
         seed.deserialize(&mut *self.de).map(Some)
     }
@@ -332,5 +329,174 @@ impl<'de, 'v> VariantAccess<'de> for EnumVisitor<'v, 'de> {
         V: Visitor<'de>,
     {
         de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde::Deserialize;
+
+    use super::deserialize_sentence;
+    use crate::api::model::{Response, TrapCategory};
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    struct FirewallRule {
+        name: String,
+        comment: String,
+        packet_count: u32,
+        enabled: bool,
+    }
+
+    #[test]
+    fn test_deserialize_value_containing_equals_signs() {
+        let sentence = vec![
+            "!re".to_string(),
+            ".tag=12".to_string(),
+            "=name=drop-wan-ssh".to_string(),
+            "=comment=proto=TCP port=22 src-mac=AA:BB:CC:DD:EE:FF in:wan out:lan".to_string(),
+            "=packet-count=42".to_string(),
+            "=enabled=true".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<FirewallRule> =
+            deserialize_sentence(&sentence).expect("failed to deserialize sentence");
+
+        match res {
+            Response::Reply(rule) => {
+                assert_eq!(rule.name, "drop-wan-ssh");
+                assert_eq!(
+                    rule.comment,
+                    "proto=TCP port=22 src-mac=AA:BB:CC:DD:EE:FF in:wan out:lan"
+                );
+                assert_eq!(rule.packet_count, 42);
+                assert!(rule.enabled);
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_base64_and_empty_values_with_equals() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        struct TokenInfo {
+            token: String,
+            signature: String,
+            empty_val: String,
+            consecutive: String,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=token=eyJhbGciOiJIUzI1NiJ9.test.sig==".to_string(),
+            "=signature=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA==".to_string(),
+            "=empty-val=".to_string(),
+            "=consecutive=====".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<TokenInfo> =
+            deserialize_sentence(&sentence).expect("failed to deserialize base64");
+
+        match res {
+            Response::Reply(info) => {
+                assert_eq!(info.token, "eyJhbGciOiJIUzI1NiJ9.test.sig==");
+                assert_eq!(
+                    info.signature,
+                    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA=="
+                );
+                assert_eq!(info.empty_val, "");
+                assert_eq!(info.consecutive, "====");
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_into_hashmap_with_equals_values() {
+        let sentence = vec![
+            "!re".to_string(),
+            "=key1=val1".to_string(),
+            "=script=:if ($a = $b) do={ /ip firewall print }".to_string(),
+            "=filter=?name=ether1&running=true".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<HashMap<String, String>> =
+            deserialize_sentence(&sentence).expect("failed to deserialize HashMap");
+
+        match res {
+            Response::Reply(map) => {
+                assert_eq!(map.get("key1").unwrap(), "val1");
+                assert_eq!(
+                    map.get("script").unwrap(),
+                    ":if ($a = $b) do={ /ip firewall print }"
+                );
+                assert_eq!(map.get("filter").unwrap(), "?name=ether1&running=true");
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_trap_message_with_equals() {
+        let sentence = vec![
+            "!trap".to_string(),
+            "=category=1".to_string(),
+            "=message=syntax error at line 3: where ($status = \"active\")".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<()> =
+            deserialize_sentence(&sentence).expect("failed to deserialize Trap");
+
+        match res {
+            Response::Trap { category, message } => {
+                assert_eq!(category, Some(TrapCategory::ArgumentValueFailure));
+                assert_eq!(
+                    message,
+                    "syntax error at line 3: where ($status = \"active\")"
+                );
+            }
+            other => panic!("expected Trap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_boolean_yes_no() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        struct Flags {
+            flag_yes: bool,
+            flag_no: bool,
+            flag_true: bool,
+            flag_false: bool,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=flag-yes=yes".to_string(),
+            "=flag-no=no".to_string(),
+            "=flag-true=true".to_string(),
+            "=flag-false=false".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<Flags> =
+            deserialize_sentence(&sentence).expect("failed to deserialize bools");
+
+        match res {
+            Response::Reply(flags) => {
+                assert!(flags.flag_yes);
+                assert!(!flags.flag_no);
+                assert!(flags.flag_true);
+                assert!(!flags.flag_false);
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
     }
 }
