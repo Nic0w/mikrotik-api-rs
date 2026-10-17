@@ -57,6 +57,16 @@ impl<T: DeserializeOwned + Debug> AsyncCall for ArrayListCall<T> {
 
         Err(CallError::BadLock)
     }
+
+    fn disconnect(&mut self) {
+        if let Ok(mut call) = self.0.lock() {
+            if let Some(vec) = call.inner.as_mut() {
+                vec.push(Response::Fatal);
+                vec.push(Response::Done);
+            }
+            let _ = call.done();
+        }
+    }
 }
 
 impl<T: Debug> Future for ArrayListCall<T> {

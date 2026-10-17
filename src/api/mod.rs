@@ -184,7 +184,7 @@ impl MikrotikAPI<Disconnected> {
 
             Trap { message, .. } => Err(Error::Remote(message)),
 
-            Fatal => panic!("Fatal error."),
+            Fatal => Err(Error::EndOfStream),
         }
     }
 }
