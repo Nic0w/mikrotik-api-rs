@@ -54,6 +54,11 @@ pub struct MikrotikAPI<S: State> {
 }
 
 impl<S: State> MikrotikAPI<S> {
+    /// Returns the number of currently active calls registered in the tag map.
+    pub fn active_calls_count(&self) -> usize {
+        self.tag_map.lock().map(|m| m.len()).unwrap_or(0)
+    }
+
     async fn send_command(
         &mut self,
         command: &str,
@@ -347,16 +352,30 @@ fn encode_sentence<S: AsRef<str>>(words: &[S]) -> Vec<u8> {
     res
 }
 
-fn next_tag(tag_iter: &mut dyn Iterator<Item = u16>, unlocked_map: &MutexGuard<TagMap>) -> u16 {
-    for tag in tag_iter {
-        if unlocked_map.contains_key(&tag) {
-            continue;
-        }
+const MAX_TAGS: usize = (u16::MAX - 1) as usize; // 65534 valid tags (1..u16::MAX)
 
-        return tag;
+fn next_tag(tag_iter: &mut dyn Iterator<Item = u16>, unlocked_map: &MutexGuard<TagMap>) -> u16 {
+    // Try sampling random tags from the iterator first.
+    for _ in 0..128 {
+        if let Some(tag) = tag_iter.next() {
+            if !unlocked_map.contains_key(&tag) {
+                return tag;
+            }
+        }
     }
 
-    unreachable!()
+    // If random sampling collided repeatedly or tag space is heavily populated,
+    // fall back to a linear scan to find an available tag.
+    for tag in 1..u16::MAX {
+        if !unlocked_map.contains_key(&tag) {
+            return tag;
+        }
+    }
+
+    panic!(
+        "Tag space exhausted: all {} tags are currently in use",
+        MAX_TAGS
+    );
 }
 
 #[cfg(test)]
@@ -504,5 +523,52 @@ mod tests {
         let w = encode_word(&word_2b_256);
         assert_eq!(&w[..2], &[0x81, 0x00]);
         assert_eq!(&w[2..], word_2b_256.as_bytes());
+    }
+
+    #[test]
+    fn test_next_tag_basic_and_collision() {
+        use super::{next_tag, EmptyCall, TagMap};
+        use std::sync::Mutex;
+
+        let map = Mutex::new(TagMap::new());
+        let mut guarded = map.lock().unwrap();
+
+        // Single repeated tag in iterator
+        let mut iter = std::iter::repeat(42u16);
+        assert_eq!(next_tag(&mut iter, &guarded), 42);
+
+        // Insert 42 into map
+        guarded.insert(42, Box::new(EmptyCall::new()));
+
+        // Iterator still yields 42, but next_tag should skip it and fall back to linear scan
+        let mut iter2 = std::iter::repeat(42u16);
+        let tag = next_tag(&mut iter2, &guarded);
+        assert_ne!(tag, 42);
+        assert_eq!(tag, 1);
+    }
+
+    #[test]
+    fn test_next_tag_panics_on_exhaustion() {
+        use super::{next_tag, EmptyCall, TagMap, MAX_TAGS};
+        use std::sync::Mutex;
+
+        let map = Mutex::new(TagMap::new());
+        let mut guarded = map.lock().unwrap();
+
+        let dummy = EmptyCall::new();
+        for t in 1..u16::MAX {
+            guarded.insert(t, Box::new(dummy.clone()));
+        }
+        assert_eq!(guarded.len(), MAX_TAGS);
+
+        let mut iter = 1..u16::MAX;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            next_tag(&mut iter, &guarded);
+        }));
+
+        assert!(
+            result.is_err(),
+            "expected next_tag to panic on tag exhaustion"
+        );
     }
 }
