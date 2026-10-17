@@ -77,30 +77,34 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib --bins --locked
 
-  # Step 3 placeholder (to be enabled when functional test suite & router secrets are configured):
-  # functional-test:
-  #   name: Functional Tests (RouterOS)
-  #   needs: unit-test
-  #   runs-on: rust
-  #   concurrency:
-  #     group: mikrotik-router-functional-tests
-  #     cancel-in-progress: false
-  #   env:
-  #     MIKROTIK_ADDR: ${{ vars.MIKROTIK_TEST_ADDR }}
-  #     MIKROTIK_USER: ${{ secrets.MIKROTIK_TEST_USER }}
-  #     MIKROTIK_PASS: ${{ secrets.MIKROTIK_TEST_PASS }}
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #     - uses: actions/cache@v3
-  #       with:
-  #         path: |
-  #           ~/.cargo/bin/
-  #           ~/.cargo/registry/index/
-  #           ~/.cargo/registry/cache/
-  #           ~/.cargo/git/db/
-  #           target/
-  #         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-  #         restore-keys: |
-  #           ${{ runner.os }}-cargo-
-  #     - name: Run functional tests against RouterOS
-  #       run: cargo test --test functional --locked -- --ignored --test-threads=1
+  functional-test:
+    name: Functional Tests (RouterOS)
+    needs: unit-test
+    runs-on: rust
+    concurrency:
+      group: mikrotik-router-functional-tests
+      cancel-in-progress: false
+    env:
+      MIKROTIK_ADDR: ${{ vars.MIKROTIK_TEST_ADDR }}
+      MIKROTIK_USER: ${{ secrets.MIKROTIK_TEST_USER }}
+      MIKROTIK_PASS: ${{ secrets.MIKROTIK_TEST_PASS }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run functional tests against RouterOS
+        run: cargo test --test functional --locked -- --ignored --test-threads=1 --nocapture
+
