@@ -66,9 +66,10 @@ impl<T: Debug> Future for OneShotCall<T> {
             if let Some(value) = call.get_done() {
                 return Poll::Ready(value);
             }
+
+            call.register_waker(cx.waker());
         }
 
-        cx.waker().wake_by_ref();
         Poll::Pending
     }
 }

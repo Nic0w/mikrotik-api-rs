@@ -353,3 +353,103 @@ async fn test_word_len_tier_boundaries() {
         );
     }
 }
+
+/// Wrapper future that counts how many times `poll()` is invoked before resolving.
+struct PollCounter<F> {
+    inner: std::pin::Pin<Box<F>>,
+    polls: usize,
+}
+
+impl<F: std::future::Future> PollCounter<F> {
+    fn new(fut: F) -> Self {
+        Self {
+            inner: Box::pin(fut),
+            polls: 0,
+        }
+    }
+}
+
+impl<F: std::future::Future> std::future::Future for PollCounter<F> {
+    type Output = (F::Output, usize);
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.polls += 1;
+        match self.inner.as_mut().poll(cx) {
+            std::task::Poll::Ready(val) => std::task::Poll::Ready((val, self.polls)),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+/// Verifies that `OneShotCall` and `ArrayListCall` do not busy-spin in `Future::poll`
+/// while waiting for the router's network reply (Issue #2).
+///
+/// Previously, `cx.waker().wake_by_ref()` was called unconditionally before returning
+/// `Poll::Pending`, causing Tokio to poll the future thousands of times at 100% CPU
+/// during a single network round-trip. With proper waker registration, the future is
+/// polled once when initially pending and woken once when `!done` is received.
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_no_busy_spin_on_oneshot_and_array_calls() {
+    let mut api = connect_and_login().await;
+
+    // 1. Test OneShotCall poll count over live network RTT
+    let (identity_res, oneshot_polls) = timeout(
+        Duration::from_secs(5),
+        PollCounter::new(api.generic_oneshot_call::<Identity>("/system/identity/print", None)),
+    )
+    .await
+    .expect("timed out on PollCounter oneshot call");
+
+    let identity = identity_res.expect("oneshot call failed");
+    assert!(!identity.name.is_empty());
+    println!("OneShotCall resolved in {} polls", oneshot_polls);
+    assert!(
+        oneshot_polls <= 3,
+        "OneShotCall busy-spun! Expected <= 3 polls, got {} polls",
+        oneshot_polls
+    );
+
+    // 2. Test ArrayListCall poll count over live network RTT
+    let (interfaces_res, array_polls) = timeout(
+        Duration::from_secs(5),
+        PollCounter::new(api.generic_array_call::<InterfaceName>("/interface/print", None)),
+    )
+    .await
+    .expect("timed out on PollCounter array call");
+
+    let interfaces = interfaces_res.expect("array call failed");
+    assert!(!interfaces.is_empty());
+    println!(
+        "ArrayListCall ({} items) resolved in {} polls",
+        interfaces.len(),
+        array_polls
+    );
+    assert!(
+        array_polls <= 3,
+        "ArrayListCall busy-spun! Expected <= 3 polls, got {} polls",
+        array_polls
+    );
+
+    // 3. Test !trap error response also wakes cleanly without busy-spinning
+    let (trap_res, trap_polls) = timeout(
+        Duration::from_secs(5),
+        PollCounter::new(api.generic_oneshot_call::<Identity>(
+            "/system/identity/set",
+            Some(&[("name", "should-not-work")]),
+        )),
+    )
+    .await
+    .expect("timed out on PollCounter trap call");
+
+    assert!(trap_res.is_err(), "expected !trap on read-only user write");
+    println!("Trap OneShotCall resolved in {} polls", trap_polls);
+    assert!(
+        trap_polls <= 3,
+        "Trap OneShotCall busy-spun! Expected <= 3 polls, got {} polls",
+        trap_polls
+    );
+}
