@@ -453,3 +453,40 @@ async fn test_no_busy_spin_on_oneshot_and_array_calls() {
         trap_polls
     );
 }
+
+/// Verifies that when the router terminates the session (`/quit` -> `!fatal` + TCP EOF),
+/// `event_loop` exits cleanly without spinning and wakes all in-flight callers and streams
+/// (Issue #3).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_disconnect_on_quit_notifies_inflight_callers_and_streams() {
+    use futures::StreamExt;
+
+    let mut api = connect_and_login().await;
+
+    // 1. Start an infinite streaming listener on the connection
+    let mut tag = 0u16;
+    let mut stream = Box::pin(api.interfaces_changes(&mut tag).await);
+
+    // 2. Send `/quit`, which causes RouterOS to send `!fatal` and close the TCP connection
+    let quit_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<()>("/quit", None),
+    )
+    .await
+    .expect("in-flight OneShotCall hung after router closed connection on /quit");
+
+    assert!(
+        quit_res.is_err(),
+        "expected Err(EndOfStream) on /quit disconnection, got {:?}",
+        quit_res
+    );
+
+    // 3. The active streaming listener must also be woken and terminate (return None)
+    // Drain any queued initial events until None is reached.
+    timeout(Duration::from_secs(5), async {
+        while stream.next().await.is_some() {}
+    })
+    .await
+    .expect("active StreamingCall hung after router closed connection");
+}

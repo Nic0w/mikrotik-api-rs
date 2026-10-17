@@ -38,6 +38,8 @@ pub trait AsyncCall {
     fn push_reply(&mut self, sentence: Vec<String>) -> Result<(), CallError>;
 
     fn done(&mut self) -> Result<(), CallError>;
+
+    fn disconnect(&mut self);
 }
 
 struct InnerCall<T> {

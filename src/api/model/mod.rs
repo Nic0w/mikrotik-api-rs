@@ -81,7 +81,7 @@ impl<T> From<Response<T>> for Result<T, Error> {
         match response {
             Response::Reply(value) => Ok(value),
             Response::Trap { message, .. } => Err(Error::Remote(message)),
-            _ => unreachable!(),
+            Response::Done | Response::Fatal => Err(Error::EndOfStream),
         }
     }
 }
@@ -89,11 +89,16 @@ impl<T> From<Response<T>> for Result<T, Error> {
 impl<A, V: FromIterator<A>> FromIterator<Response<A>> for Response<V> {
     fn from_iter<T: IntoIterator<Item = Response<A>>>(iter: T) -> Self {
         let mut found_trap = None;
+        let mut found_fatal = false;
 
         use Response::*;
         //No idea what I'm doing. This code has been inspired from https://github.com/rust-lang/rust/pull/59605
         let v: V = FromIterator::from_iter(iter.into_iter().scan((), |_, elt| match elt {
-            Done | Fatal => None,
+            Done => None,
+            Fatal => {
+                found_fatal = true;
+                None
+            }
             Reply(value) => Some(value),
 
             trap @ Trap { .. } => {
@@ -102,10 +107,12 @@ impl<A, V: FromIterator<A>> FromIterator<Response<A>> for Response<V> {
             }
         }));
 
-        match found_trap {
-            Some(Trap { message, category }) => Trap { category, message },
+        match (found_trap, found_fatal) {
+            (Some(Trap { message, category }), _) => Trap { category, message },
 
-            None => Reply(v),
+            (None, true) => Fatal,
+
+            (None, false) => Reply(v),
 
             _ => unreachable!(),
         }

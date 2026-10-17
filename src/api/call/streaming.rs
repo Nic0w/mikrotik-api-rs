@@ -69,6 +69,13 @@ impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
 
         Err(CallError::BadLock)
     }
+
+    fn disconnect(&mut self) {
+        if let Ok(mut call) = self.inner.lock() {
+            let _ = call.sender.send(Response::Done);
+            let _ = call.done();
+        }
+    }
 }
 
 impl<T> Clone for StreamingCall<T> {
