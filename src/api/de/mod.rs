@@ -1,7 +1,7 @@
 use std::{slice::Iter, str::FromStr};
 
 use serde::{
-    de::{self, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor},
+    de::{self, EnumAccess, IntoDeserializer, MapAccess, VariantAccess, Visitor},
     forward_to_deserialize_any, Deserializer,
 };
 
@@ -251,27 +251,6 @@ impl<'de, 'api> Deserializer<'de> for &'api mut SentenceDeserializer<'de> {
                 dyn std::error::Error,
             >::from(e))),
         }
-    }
-}
-
-struct SeqVisitor<'v, 'de: 'v> {
-    pub de: &'v mut SentenceDeserializer<'de>,
-}
-
-impl<'de, 'v> SeqAccess<'de> for SeqVisitor<'v, 'de> {
-    type Error = DeserializerError;
-
-    fn next_element_seed<S>(&mut self, seed: S) -> Result<Option<S::Value>>
-    where
-        S: serde::de::DeserializeSeed<'de>,
-    {
-        self.de.current_word = Some(self.de.read_word()?);
-
-        if let Some("") = self.de.current_word {
-            return Ok(None);
-        }
-
-        seed.deserialize(&mut *self.de).map(Some)
     }
 }
 
