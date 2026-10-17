@@ -164,16 +164,9 @@ cargo test --lib --bins
 
 When editing or extending this codebase, pay close attention to these known issues:
 
-### 1. `encode_len` Buffer Panics and Endianness Bug (`src/api/mod.rs`)
-In `encode_len`:
-```rust
-} else if len <= 0x3FFF {
-    let bytes = ((len as u16) | 0x8000).to_ne_bytes();
-    res.copy_from_slice(&bytes);
-```
-- **Panic Risk**: `res.copy_from_slice(...)` is called on a zero-capacity vector `res` (`let mut res = vec![];`). Calling `copy_from_slice` on an empty slice panics! It must use `res.extend_from_slice(&bytes)` or `res.extend(...)`.
-- **Endianness Bug**: `to_ne_bytes()` is used instead of `to_be_bytes()`. Network protocol requires Big-Endian.
-- *Why it hasn't crashed yet*: Most command words sent so far are shorter than 128 bytes, which hit the `len <= 0x7F` branch (`res.push(len as u8)`). Sending any argument/word > 127 bytes will immediately panic or corrupt length framing.
+### 1. [RESOLVED in #1] `encode_len` Buffer Panics and Endianness Bug (`src/api/mod.rs`)
+Previously, `res.copy_from_slice(...)` was called on empty `vec![]` (causing panics for `len >= 128`), and `to_ne_bytes()` / incorrect 3-byte slicing corrupted wire framing. This was resolved with `encode_len_usize`, `extend_from_slice`, `to_be_bytes()`, and correct Big-Endian slicing.
+
 
 ### 2. CPU Spin in `Future::poll` (`src/api/call/one_shot.rs` & `src/api/call/array.rs`)
 Inside `poll()`:

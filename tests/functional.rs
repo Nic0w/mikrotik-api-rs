@@ -146,3 +146,210 @@ async fn test_readonly_user_cannot_write() {
         "expected read-only test user to be denied write permission"
     );
 }
+
+#[derive(Debug, Deserialize)]
+struct InterfaceName {
+    #[allow(dead_code)]
+    pub name: String,
+}
+
+/// Tests 2-byte word length encoding where total word length is 256 (0x0100).
+///
+/// With the endianness bug (`to_ne_bytes()` on little-endian), `(256u16 | 0x8000)` (0x8100)
+/// is encoded as `[0x00, 0x81]`. The leading `0x00` byte acts as an empty-word sentence
+/// terminator on the wire, causing RouterOS to execute `/interface/print` BEFORE seeing
+/// the `?name=...` filter and return all interfaces instead of an empty list.
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_word_len_two_bytes_256_endianness() {
+    let mut api = connect_and_login().await;
+
+    // "?name=" is 6 bytes; 6 + 250 = 256 bytes (0x0100).
+    let filter_val = "a".repeat(250);
+    assert_eq!(format!("?name={}", filter_val).len(), 256);
+
+    let interfaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[("?name", filter_val.as_str())]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for 256-byte word query response")
+    .expect("failed to execute 256-byte word query");
+
+    assert!(
+        interfaces.is_empty(),
+        "expected 0 interfaces matching 250-char name, got {} (sentence was truncated by 0x00 byte!)",
+        interfaces.len()
+    );
+}
+
+/// Tests 2-byte word length encoding where total word length is 258 (0x0102).
+///
+/// With the endianness bug (`to_ne_bytes()` on little-endian), `(258u16 | 0x8000)` (0x8102)
+/// is encoded as `[0x02, 0x81]`. RouterOS reads:
+/// - `0x02` -> 2-byte word `"\x81?"`
+/// - `word[1]` = `'n'` (110) -> 110-byte word `word[2..112]`
+/// - `word[112]` = `'H'` (72) -> 72-byte word `word[113..185]`, which starts with `"=bad=..."`!
+/// - `word[185]` = `'H'` (72) -> 72-byte word `word[186..258]` (ending right at 258!)
+/// - `0x00` -> end of sentence!
+/// Because `word[113..185]` starts with `"=bad="`, RouterOS interprets it as an attribute
+/// parameter on `/interface/print` and immediately returns `!trap =message=unknown parameter`!
+/// When properly encoded in big-endian (`[0x81, 0x02]`), the entire 258-byte string is a single
+/// `?name=...` filter word and RouterOS returns `Ok([])`.
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_word_len_two_bytes_258_corrupted_words() {
+    let mut api = connect_and_login().await;
+
+    // "?name=" (6) + "H"*107 + "=bad=" (5) + "H"*140 = 258 bytes (0x0102).
+    let filter_val = format!("{}=bad={}", "H".repeat(107), "H".repeat(140));
+    assert_eq!(format!("?name={}", filter_val).len(), 258);
+
+    let interfaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[("?name", filter_val.as_str())]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for 258-byte word query response")
+    .expect("router rejected corrupted sentence from 258-byte word");
+
+    assert!(
+        interfaces.is_empty(),
+        "expected 0 interfaces matching 252-char name, got {}",
+        interfaces.len()
+    );
+}
+
+/// Tests 3-byte word length encoding where total word length is 16385 (0x4001).
+///
+/// Even with big-endian `to_be_bytes()`, `((16385u32) | 0xC00000).to_be_bytes()` produces
+/// `[0x00, 0xC0, 0x40, 0x01]`. With the slice range bug (`&bytes[..3]` instead of `&bytes[1..]`),
+/// the client sends `[0x00, 0xC0, 0x40]`. The leading `0x00` prematurely terminates the
+/// sentence on RouterOS before the `?name=...` filter, returning all interfaces instead of 0.
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_word_len_three_bytes_16385_slice_range() {
+    let mut api = connect_and_login().await;
+
+    // "?name=" is 6 bytes; 6 + 16379 = 16385 bytes (0x4001).
+    let filter_val = "a".repeat(16379);
+    assert_eq!(format!("?name={}", filter_val).len(), 16385);
+
+    let interfaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[("?name", filter_val.as_str())]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for 16385-byte word query response")
+    .expect("failed to execute 16385-byte word query");
+
+    assert!(
+        interfaces.is_empty(),
+        "expected 0 interfaces matching 16379-char name, got {} (sentence was truncated by 0x00 byte!)",
+        interfaces.len()
+    );
+}
+
+/// Verifies that a sentence combining 1-byte, 2-byte, and 3-byte words using RouterOS
+/// postfix query operators (`?#|` logical OR) is parsed end-to-end by the router and leaves
+/// the multiplexed TCP session clean for subsequent commands.
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_word_len_compound_query_and_session_integrity() {
+    let mut api = connect_and_login().await;
+
+    let two_byte_filter = "x".repeat(300); // word len = 306 (2-byte length)
+    let three_byte_filter = "y".repeat(16400); // word len = 16406 (3-byte length)
+
+    // Postfix query stack:
+    // 1. ?name=<300 'x's>      -> false
+    // 2. ?name=<16400 'y's>    -> false
+    // 3. ?#|                   -> false || false = false
+    // 4. ?name=lo              -> true (only for loopback interface 'lo')
+    // 5. ?#|                   -> false || (name == "lo") -> matches only 'lo'
+    let interfaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[
+                ("?name", two_byte_filter.as_str()),
+                ("?name", three_byte_filter.as_str()),
+                ("?#|", ""),
+                ("?name", "lo"),
+                ("?#|", ""),
+            ]),
+        ),
+    )
+    .await
+    .expect("timed out on compound 2-byte + 3-byte query")
+    .expect("failed to execute compound 2-byte + 3-byte query");
+
+    assert_eq!(
+        interfaces.len(),
+        1,
+        "expected exactly 1 interface ('lo') from compound OR query, got {:?}",
+        interfaces
+    );
+    assert_eq!(interfaces[0].name, "lo");
+
+    // Verify the TCP stream framing is completely intact by issuing a follow-up command
+    // on the exact same connection.
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out on follow-up command after large words")
+    .expect("failed follow-up command after large words");
+
+    assert!(!identity.name.is_empty());
+}
+
+/// Tests the exact protocol length encoding tier boundaries against the live router:
+/// - 127 bytes (`0x7F`, max 1-byte length)
+/// - 128 bytes (`0x80`, min 2-byte length)
+/// - 16383 bytes (`0x3FFF`, max 2-byte length)
+/// - 16384 bytes (`0x4000`, min 3-byte length)
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_word_len_tier_boundaries() {
+    let mut api = connect_and_login().await;
+
+    for target_word_len in [0x7Fusize, 0x80, 0x3FFF, 0x4000] {
+        // "?name=" prefix is 6 bytes
+        let filter_val = "z".repeat(target_word_len - 6);
+        assert_eq!(format!("?name={}", filter_val).len(), target_word_len);
+
+        let interfaces = timeout(
+            Duration::from_secs(5),
+            api.generic_array_call::<InterfaceName>(
+                "/interface/print",
+                Some(&[("?name", filter_val.as_str())]),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("timed out on boundary word len {:#x}", target_word_len))
+        .unwrap_or_else(|e| {
+            panic!(
+                "router error on boundary word len {:#x}: {:?}",
+                target_word_len, e
+            )
+        });
+
+        assert!(
+            interfaces.is_empty(),
+            "expected 0 interfaces for boundary word len {:#x}, got {}",
+            target_word_len,
+            interfaces.len()
+        );
+    }
+}
