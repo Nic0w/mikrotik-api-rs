@@ -63,6 +63,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
     fn done(&mut self) -> Result<(), CallError> {
         if let Ok(mut call) = self.inner.lock() {
             call.done()?;
+            let _ = call.sender.send(Response::Done);
 
             return Ok(());
         }

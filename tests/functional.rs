@@ -490,3 +490,40 @@ async fn test_disconnect_on_quit_notifies_inflight_callers_and_streams() {
     .await
     .expect("active StreamingCall hung after router closed connection");
 }
+
+/// Verifies that `generic_oneshot_call` does not panic when the router omits `!re`
+/// and returns only a `!done` sentence (e.g. a filtered query matching 0 items) (Issue #4).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_oneshot_call_with_empty_reply_does_not_panic() {
+    let mut api = connect_and_login().await;
+
+    // Query a non-existent interface via `generic_oneshot_call`:
+    // RouterOS replies only with `!done .tag=xxx` (no `!re` frame).
+    let res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[("?name", "nonexistent-interface-issue-4")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for empty oneshot response");
+
+    assert!(
+        res.is_err(),
+        "expected Err(EmptyResponse) when router returns only !done without !re, got {:?}",
+        res
+    );
+
+    // Verify that `event_loop` is still alive and healthy for subsequent calls
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out on follow-up call after empty oneshot response")
+    .expect("follow-up call failed after empty oneshot response");
+
+    assert!(!identity.name.is_empty());
+}

@@ -5,6 +5,7 @@ use std::io;
 pub enum Error {
     Incomplete,
     EndOfStream,
+    EmptyResponse,
     Remote(String),
     Io(io::Error),
 }
@@ -22,6 +23,8 @@ impl std::fmt::Display for Error {
             Incomplete => f.write_str("not enough data"),
 
             EndOfStream => f.write_str("reached EOF"),
+
+            EmptyResponse => f.write_str("empty response from router"),
 
             Remote(msg) => write!(f, "error from router: {}", msg),
 
