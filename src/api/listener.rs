@@ -87,15 +87,18 @@ pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap)
                 if let Some((frame_type, id)) = tuple {
                     if let Ok(mut guarded_map) = tags.lock() {
                         if let Some(caller) = guarded_map.get_mut(&id) {
-                            if let Err(e) = caller.push_reply(sentence) {
-                                error!("on push_reply: {:?}", e);
-                                break;
-                            }
-
-                            if let Done = frame_type {
-                                if let Err(e) = caller.done() {
-                                    error!("on done: {:?}", e);
-                                    break;
+                            match frame_type {
+                                Reply => {
+                                    if let Err(e) = caller.push_reply(sentence) {
+                                        error!("on push_reply: {:?}", e);
+                                        break;
+                                    }
+                                }
+                                Done => {
+                                    if let Err(e) = caller.done() {
+                                        error!("on done: {:?}", e);
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -247,5 +250,54 @@ mod tests {
             .expect("OneShotCall hung after I/O error!")
             .into();
         assert!(matches!(oneshot_res, Err(Error::EndOfStream)));
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_done_only_without_re() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<u32>::new();
+        let array = ArrayListCall::<u32>::new();
+        let mut streaming = StreamingCall::<u32>::new();
+
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(oneshot.clone()));
+        map.insert(2, Box::new(array.clone()));
+        map.insert(3, Box::new(streaming.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map));
+
+        // Helper to write a `!done` sentence for a given tag
+        for tag in [".tag=1", ".tag=2", ".tag=3"] {
+            client_write.write_all(&[5]).await.unwrap();
+            client_write.write_all(b"!done").await.unwrap();
+            client_write.write_all(&[tag.len() as u8]).await.unwrap();
+            client_write.write_all(tag.as_bytes()).await.unwrap();
+            client_write.write_all(&[0]).await.unwrap();
+        }
+
+        // 1. OneShotCall resolves to Response::Done, and converts to Err(Error::EmptyResponse) without panicking
+        let oneshot_resp = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out on !done-only frame");
+        assert!(matches!(oneshot_resp, Response::Done));
+        let oneshot_res: Result<u32, Error> = oneshot_resp.into();
+        assert!(matches!(oneshot_res, Err(Error::EmptyResponse)));
+
+        // 2. ArrayListCall resolves to an empty Vec without panicking
+        let array_res: Result<Vec<u32>, Error> = timeout(Duration::from_secs(1), array)
+            .await
+            .expect("ArrayListCall timed out on !done-only frame")
+            .into_iter()
+            .collect::<Response<Vec<u32>>>()
+            .into();
+        assert_eq!(array_res.unwrap(), Vec::<u32>::new());
+
+        // 3. StreamingCall terminates cleanly (returns None)
+        let stream_item = timeout(Duration::from_secs(1), streaming.next())
+            .await
+            .expect("StreamingCall timed out on !done-only frame");
+        assert!(stream_item.is_none());
     }
 }

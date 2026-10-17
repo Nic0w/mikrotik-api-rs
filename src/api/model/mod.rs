@@ -81,7 +81,8 @@ impl<T> From<Response<T>> for Result<T, Error> {
         match response {
             Response::Reply(value) => Ok(value),
             Response::Trap { message, .. } => Err(Error::Remote(message)),
-            Response::Done | Response::Fatal => Err(Error::EndOfStream),
+            Response::Done => Err(Error::EmptyResponse),
+            Response::Fatal => Err(Error::EndOfStream),
         }
     }
 }

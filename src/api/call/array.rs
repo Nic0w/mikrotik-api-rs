@@ -62,7 +62,6 @@ impl<T: DeserializeOwned + Debug> AsyncCall for ArrayListCall<T> {
         if let Ok(mut call) = self.0.lock() {
             if let Some(vec) = call.inner.as_mut() {
                 vec.push(Response::Fatal);
-                vec.push(Response::Done);
             }
             let _ = call.done();
         }
@@ -74,10 +73,7 @@ impl<T: Debug> Future for ArrayListCall<T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         if let Ok(mut call) = self.0.lock() {
-            if let Some(mut vec) = call.get_done().take() {
-                //remove !done response at the end
-                vec.pop();
-
+            if let Some(vec) = call.get_done() {
                 return Poll::Ready(vec);
             }
 

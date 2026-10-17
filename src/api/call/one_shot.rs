@@ -46,6 +46,9 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
 
     fn done(&mut self) -> Result<(), CallError> {
         if let Ok(mut call) = self.0.lock() {
+            if call.inner.is_none() {
+                call.inner = Some(Response::Done);
+            }
             call.done()?;
 
             return Ok(());

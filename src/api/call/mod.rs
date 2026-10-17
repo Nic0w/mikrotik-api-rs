@@ -131,16 +131,11 @@ mod tests {
         assert!(matches!(Pin::new(&mut call).poll(&mut cx), Poll::Pending));
         assert_eq!(wake_count.load(Ordering::SeqCst), 0);
 
-        // Push reply (still waiting for done) -> no wake yet
-        call.push_reply(vec!["!done".to_string(), ".tag=1".to_string()])
-            .unwrap();
-        assert_eq!(wake_count.load(Ordering::SeqCst), 0);
-
-        // Trigger done() -> wakes the registered waker exactly once
+        // Trigger done() without prior !re reply -> defaults to Response::Done and wakes once
         call.done().unwrap();
         assert_eq!(wake_count.load(Ordering::SeqCst), 1);
 
-        // Next poll returns Ready
+        // Next poll returns Ready(Response::Done)
         assert!(matches!(
             Pin::new(&mut call).poll(&mut cx),
             Poll::Ready(Response::Done)
@@ -158,10 +153,8 @@ mod tests {
         assert!(matches!(Pin::new(&mut call).poll(&mut cx), Poll::Pending));
         assert_eq!(wake_count.load(Ordering::SeqCst), 0);
 
-        // Push !re and !done replies -> no wake until done()
+        // Push !re reply -> no wake until done()
         call.push_reply(vec!["!re".to_string(), ".tag=1".to_string()])
-            .unwrap();
-        call.push_reply(vec!["!done".to_string(), ".tag=1".to_string()])
             .unwrap();
         assert_eq!(wake_count.load(Ordering::SeqCst), 0);
 
@@ -169,7 +162,7 @@ mod tests {
         call.done().unwrap();
         assert_eq!(wake_count.load(Ordering::SeqCst), 1);
 
-        // Next poll returns Ready with the 1 !re item (!done popped)
+        // Next poll returns Ready with the 1 !re item
         let res = Pin::new(&mut call).poll(&mut cx);
         match res {
             Poll::Ready(items) => assert_eq!(items.len(), 1),
@@ -195,8 +188,6 @@ mod tests {
             Poll::Pending
         ));
 
-        call.push_reply(vec!["!done".to_string(), ".tag=1".to_string()])
-            .unwrap();
         call.done().unwrap();
 
         assert_eq!(count1.load(Ordering::SeqCst), 0);
@@ -204,9 +195,6 @@ mod tests {
 
         // 2. Calling done() before the first poll resolves immediately on first poll
         let mut fast_call = OneShotCall::<()>::new();
-        fast_call
-            .push_reply(vec!["!done".to_string(), ".tag=2".to_string()])
-            .unwrap();
         fast_call.done().unwrap();
 
         let count3 = Arc::new(AtomicUsize::new(0));
@@ -225,9 +213,6 @@ mod tests {
 
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            one_shot_producer
-                .push_reply(vec!["!done".to_string(), ".tag=10".to_string()])
-                .unwrap();
             one_shot_producer.done().unwrap();
         });
 
