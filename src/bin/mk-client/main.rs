@@ -19,9 +19,9 @@ pub async fn main() {
 
     let api = mikrotik_api::connect(args.address).await.unwrap();
 
-    let password = args.password.unwrap_or_else(|| {
-        Password::new().with_prompt("Password").interact().unwrap()
-    });
+    let password = args
+        .password
+        .unwrap_or_else(|| Password::new().with_prompt("Password").interact().unwrap());
 
     let mut api = match api.authenticate(&args.login, &password).await {
         Ok(api) => api,
