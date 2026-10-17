@@ -8,7 +8,7 @@ fn get_byte(cursor: &mut Cursor<&[u8]>) -> Option<u8> {
     cursor.has_remaining().then(|| cursor.get_u8())
 }
 
-fn read_len(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
+pub(super) fn read_len(cursor: &mut Cursor<&[u8]>) -> Result<u32, Error> {
     let mut next_byte = || get_byte(cursor).ok_or(Error::Incomplete);
 
     let first_byte = next_byte()?;

@@ -300,29 +300,30 @@ impl MikrotikAPI<Authenticated> {
     }
 }
 
-fn encode_len(data: &str) -> Vec<u8> {
-    let mut res = vec![];
-
-    let len = data.len();
+fn encode_len_usize(len: usize) -> Vec<u8> {
+    let mut res = Vec::with_capacity(5);
 
     if len <= 0x7F {
-        res.push(len as u8)
+        res.push(len as u8);
     } else if len <= 0x3FFF {
-        let bytes = ((len as u16) | 0x8000).to_ne_bytes();
-        res.copy_from_slice(&bytes);
+        let bytes = ((len as u16) | 0x8000).to_be_bytes();
+        res.extend_from_slice(&bytes);
     } else if len <= 0x1FFFFF {
-        let bytes = ((len as u32) | 0xC00000).to_ne_bytes();
-        res.copy_from_slice(&bytes[..3]);
+        let bytes = ((len as u32) | 0xC00000).to_be_bytes();
+        res.extend_from_slice(&bytes[1..]);
     } else if len <= 0xFFFFFFF {
-        let bytes = ((len as u32) | 0xE0000000).to_ne_bytes();
-        res.copy_from_slice(&bytes);
-    } else if len >= 0x10000000 {
-        let bytes = (len as u32).to_ne_bytes();
-        res.copy_from_slice(&bytes);
-        res.insert(0, 0xF0);
+        let bytes = ((len as u32) | 0xE0000000).to_be_bytes();
+        res.extend_from_slice(&bytes);
+    } else {
+        res.push(0xF0);
+        res.extend_from_slice(&(len as u32).to_be_bytes());
     }
 
     res
+}
+
+fn encode_len(data: &str) -> Vec<u8> {
+    encode_len_usize(data.len())
 }
 
 fn encode_word(word: &str) -> Vec<u8> {
@@ -356,4 +357,152 @@ fn next_tag(tag_iter: &mut dyn Iterator<Item = u16>, unlocked_map: &MutexGuard<T
     }
 
     unreachable!()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::{
+        encode_len, encode_len_usize, encode_sentence, encode_word,
+        read::{read_len, read_sentence},
+    };
+
+    #[test]
+    fn test_encode_len_one_byte() {
+        assert_eq!(encode_len(""), vec![0x00]);
+        assert_eq!(encode_len("a"), vec![0x01]);
+        assert_eq!(encode_len(&"a".repeat(0x42)), vec![0x42]);
+        assert_eq!(encode_len(&"a".repeat(0x7F)), vec![0x7F]);
+    }
+
+    #[test]
+    fn test_encode_len_two_bytes() {
+        // Lower boundary: 128 (0x80) -> 0x8080
+        assert_eq!(encode_len(&"a".repeat(0x80)), vec![0x80, 0x80]);
+
+        // Endianness regression: 256 (0x0100) -> 0x8100 (NOT [0x00, 0x81])
+        assert_eq!(encode_len(&"a".repeat(0x100)), vec![0x81, 0x00]);
+
+        // Endianness regression: 258 (0x0102) -> 0x8102 (NOT [0x02, 0x81])
+        assert_eq!(encode_len(&"a".repeat(0x102)), vec![0x81, 0x02]);
+
+        // 300 (0x012C) -> 0x812C
+        assert_eq!(encode_len(&"a".repeat(300)), vec![0x81, 0x2C]);
+
+        // Upper boundary: 16383 (0x3FFF) -> 0xBFFF
+        assert_eq!(encode_len(&"a".repeat(0x3FFF)), vec![0xBF, 0xFF]);
+    }
+
+    #[test]
+    fn test_encode_len_three_bytes() {
+        // Lower boundary & slice range regression: 16384 (0x4000) -> [0xC0, 0x40, 0x00] (NOT [0x00, 0xC0, 0x40])
+        assert_eq!(encode_len(&"a".repeat(0x4000)), vec![0xC0, 0x40, 0x00]);
+
+        // 16385 (0x4001) -> [0xC0, 0x40, 0x01]
+        assert_eq!(encode_len(&"a".repeat(0x4001)), vec![0xC0, 0x40, 0x01]);
+
+        // 0x4242 -> [0xC0, 0x42, 0x42]
+        assert_eq!(encode_len(&"a".repeat(0x4242)), vec![0xC0, 0x42, 0x42]);
+
+        // Distinct bytes across all 3 positions: 0x010203 -> [0xC1, 0x02, 0x03]
+        assert_eq!(encode_len(&"a".repeat(0x010203)), vec![0xC1, 0x02, 0x03]);
+
+        // Upper boundary: 0x1FFFFF -> [0xDF, 0xFF, 0xFF]
+        assert_eq!(encode_len_usize(0x1FFFFF), vec![0xDF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_encode_len_four_bytes() {
+        // Lower boundary: 0x200000 -> [0xE0, 0x20, 0x00, 0x00]
+        assert_eq!(encode_len_usize(0x200000), vec![0xE0, 0x20, 0x00, 0x00]);
+
+        // Distinct bytes across all 4 positions: 0x01020304 -> [0xE1, 0x02, 0x03, 0x04]
+        assert_eq!(encode_len_usize(0x01020304), vec![0xE1, 0x02, 0x03, 0x04]);
+
+        // Upper boundary: 0xFFFFFFF -> [0xEF, 0xFF, 0xFF, 0xFF]
+        assert_eq!(encode_len_usize(0xFFFFFFF), vec![0xEF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_encode_len_five_bytes() {
+        // Lower boundary: 0x10000000 -> [0xF0, 0x10, 0x00, 0x00, 0x00]
+        assert_eq!(
+            encode_len_usize(0x10000000),
+            vec![0xF0, 0x10, 0x00, 0x00, 0x00]
+        );
+
+        // Distinct bytes across all 4 payload bytes: 0xAABBCCDD -> [0xF0, 0xAA, 0xBB, 0xCC, 0xDD]
+        assert_eq!(
+            encode_len_usize(0xAABBCCDD),
+            vec![0xF0, 0xAA, 0xBB, 0xCC, 0xDD]
+        );
+
+        // Upper 32-bit boundary: 0xFFFFFFFF -> [0xF0, 0xFF, 0xFF, 0xFF, 0xFF]
+        assert_eq!(
+            encode_len_usize(0xFFFFFFFF),
+            vec![0xF0, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+    }
+
+    #[test]
+    fn test_encode_decode_len_roundtrip() {
+        let test_lengths: &[usize] = &[
+            0, 1, 0x42, 0x7E, 0x7F, 0x80, 0x81, 0xFF, 0x100, 0x101, 0x102, 300, 0x3FFE, 0x3FFF,
+            0x4000, 0x4001, 0x4242, 0x010203, 0x1FFFFE, 0x1FFFFF, 0x200000, 0x200001, 0x01020304,
+            0xFFFFFFE, 0xFFFFFFF, 0x10000000, 0x10000001, 0xAABBCCDD, 0xFFFFFFFE, 0xFFFFFFFF,
+        ];
+
+        for &len in test_lengths {
+            let encoded = encode_len_usize(len);
+            let mut cursor = Cursor::new(encoded.as_slice());
+            let decoded = read_len(&mut cursor)
+                .unwrap_or_else(|e| panic!("failed to decode length {:#x}: {:?}", len, e));
+
+            assert_eq!(
+                decoded, len as u32,
+                "round-trip mismatch for length {:#x} (encoded: {:02x?})",
+                len, encoded
+            );
+            assert_eq!(
+                cursor.position() as usize,
+                encoded.len(),
+                "cursor did not consume full encoded buffer for length {:#x}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_sentence_roundtrip() {
+        let word_1b = "/interface/print".to_string();
+        let word_2b_boundary = format!("?name={}", "a".repeat(122)); // 128 bytes
+        let word_2b_256 = format!("?name={}", "b".repeat(250)); // 256 bytes (0x0100)
+        let word_3b_boundary = format!("?name={}", "c".repeat(16378)); // 16384 bytes (0x4000)
+        let word_3b_16385 = format!("?name={}", "d".repeat(16379)); // 16385 bytes (0x4001)
+
+        let input_words = vec![
+            word_1b.as_str(),
+            word_2b_boundary.as_str(),
+            word_2b_256.as_str(),
+            word_3b_boundary.as_str(),
+            word_3b_16385.as_str(),
+        ];
+
+        let encoded = encode_sentence(&input_words);
+        let mut cursor = Cursor::new(encoded.as_slice());
+        let decoded = read_sentence(&mut cursor).expect("failed to decode multi-tier sentence");
+
+        // `read_sentence` includes the trailing empty word `""` terminator
+        let mut expected = input_words;
+        expected.push("");
+
+        assert_eq!(decoded, expected);
+        assert_eq!(cursor.position() as usize, encoded.len());
+
+        // Also verify `encode_word` prefix + payload layout directly
+        let w = encode_word(&word_2b_256);
+        assert_eq!(&w[..2], &[0x81, 0x00]);
+        assert_eq!(&w[2..], word_2b_256.as_bytes());
+    }
 }
