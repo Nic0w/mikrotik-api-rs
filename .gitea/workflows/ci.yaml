@@ -74,8 +74,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run unit tests
-        run: cargo test --lib --bins --locked
+      - name: Run unit and documentation tests
+        run: cargo test --locked
 
   functional-test:
     name: Functional Tests (RouterOS)

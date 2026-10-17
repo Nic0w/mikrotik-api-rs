@@ -1,6 +1,6 @@
 //! # Library and minimal client for RouterOS' proprietary API
 //!
-//! Mikrotik RouterOS exposes on port TCP/8278 a semi-textual API composed of words and sentences.
+//! Mikrotik RouterOS exposes on port TCP/8728 a semi-textual API composed of words and sentences.
 //! This API allow power-users to request data about the router state, set configuration, listen to some events, ... using a syntax similar to the one used in the CLI.
 //!
 //! For a more in-depth description of the API, please see the [official Mikrotik wiki](https://wiki.mikrotik.com/wiki/Manual:API).  
@@ -23,11 +23,14 @@
 //! - `system_resources` will make a call to `/system/resource/print`
 //! - `interfaces` will retrieve a list of interfaces with all their properties (``/interfaces/print``)
 //! - `active_users` returns a `Stream` of events regarding user activity (login & logout)
-//! - `interface_changes` returns a `Stream` of events regarding changes to interfaces (up, down, ...)
+//! - `interfaces_changes` (or `interface_changes`) returns a `Stream` of events regarding changes to interfaces (up, down, ...)
 //! - `cancel` cancels a streaming command given its tag
 //! - `generic_oneshot_call` allows to call any endpoint providing a one-off answer. Thanks to type inference, answer is returned in the user's object of choice. Example:
 
-//! ```rust
+//! ```rust,no_run
+//! # use serde::Deserialize;
+//! # use mikrotik_api::MikrotikAPI;
+//! # async fn doc(mut api: MikrotikAPI<mikrotik_api::Authenticated>) -> Result<(), Box<dyn std::error::Error>> {
 //! #[derive(Debug, Deserialize)]
 //! struct Identity {
 //!   pub name: String,
@@ -39,27 +42,34 @@
 //!   .unwrap();
 
 //! println!("Name: '{}'", identity.name);
+//! # Ok(())
+//! # }
 //! ```
 
 //! - `generic_array_call` will do the same job but for endpoints providing multiples (but finite) answers
 //! - `generic_streaming_call` will provide a `Stream` of `Response` for any endpoint supporting the `listen` command. Example:
-//! ```rust
+//! ```rust,no_run
+//! # use serde::Deserialize;
+//! # use futures::StreamExt;
+//! # use mikrotik_api::{MikrotikAPI, Response};
+//! # async fn doc(mut api: MikrotikAPI<mikrotik_api::Authenticated>) -> Result<(), Box<dyn std::error::Error>> {
 //! #[derive(Debug, Deserialize)]
 //! struct Interface {
 //!   pub name: String,
 //!
 //!   #[serde(default)]
 //!   pub running: bool
-//!}
+//! }
 //!
 //! let mut tag: u16 = 0;
 //!
 //! let changes = api
-//!   .generic_streaming_call::<Interface>("/interface/listen", None, &mut tag); //`tag` allows us to cancel the stream later on.
+//!   .generic_streaming_call::<Interface>("/interface/listen", None, &mut tag)
+//!   .await; // `tag` allows us to cancel the stream later on.
 //!
 //! tokio::spawn(changes.for_each(|item| async move {
 //!
-//!   if let Reponse::Reply(iface) = item {
+//!   if let Response::Reply(iface) = item {
 //!
 //!       let up_down = if iface.running { "up" } else { "down" };
 //!
@@ -67,6 +77,8 @@
 //!   }
 //!
 //! })).await;
+//! # Ok(())
+//! # }
 //! ```
 
 #![deny(missing_docs)]
