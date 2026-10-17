@@ -20,8 +20,6 @@ strip = true
 bytes = "1.2.1"
 tokio = { version = "1.21.2", features = ["full"] }
 serde = { version = "1.0.145", features = ["derive"] }
-md5 = "0.7.0"
-hex = "0.4.3"
 log = "0.4.17"
 rand = "0.8.5"
 futures = "0.3.24"
