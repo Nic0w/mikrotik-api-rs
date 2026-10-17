@@ -168,14 +168,9 @@ When editing or extending this codebase, pay close attention to these known issu
 Previously, `res.copy_from_slice(...)` was called on empty `vec![]` (causing panics for `len >= 128`), and `to_ne_bytes()` / incorrect 3-byte slicing corrupted wire framing. This was resolved with `encode_len_usize`, `extend_from_slice`, `to_be_bytes()`, and correct Big-Endian slicing.
 
 
-### 2. CPU Spin in `Future::poll` (`src/api/call/one_shot.rs` & `src/api/call/array.rs`)
-Inside `poll()`:
-```rust
-cx.waker().wake_by_ref();
-Poll::Pending
-```
-Calling `wake_by_ref()` directly during `poll` causes Tokio worker threads to busy-spin at 100% CPU while waiting for the router's reply.
-*Fix needed*: Store the waker in `InnerCall` and wake it only when `push_reply()` or `done()` is called.
+### 2. [RESOLVED in #2] CPU Spin in `Future::poll` (`src/api/call/one_shot.rs` & `src/api/call/array.rs`)
+Previously, `cx.waker().wake_by_ref()` was called unconditionally inside `poll()`, causing Tokio worker threads to busy-spin at 100% CPU while waiting for a reply. This was resolved by storing `Option<Waker>` in `InnerCall` (`register_waker`) and waking it only when `done()` is triggered.
+
 
 ### 3. Tag Map Memory Leak
 - Completed calls are never removed from `SharedTagMap`.

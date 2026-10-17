@@ -70,9 +70,10 @@ impl<T: Debug> Future for ArrayListCall<T> {
 
                 return Poll::Ready(vec);
             }
+
+            call.register_waker(cx.waker());
         }
 
-        cx.waker().wake_by_ref();
         Poll::Pending
     }
 }
