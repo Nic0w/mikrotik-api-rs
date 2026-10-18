@@ -199,6 +199,9 @@ Previously, `SystemResources` defined memory/HDD fields as `u32`, which overflow
 ### 10. [RESOLVED in #30] Missing Public Re-Exports for Error, DeserializerError, and TrapCategory (`src/lib.rs`)
 Previously, `Error`, `DeserializerError`, and `TrapCategory` were defined in private submodules without being re-exported in `src/lib.rs`, preventing downstream callers from naming `mikrotik_api::Error` or matching on `TrapCategory` and `Error` variants. This was resolved by re-exporting all three types at the crate root in `src/lib.rs` and adding complete doc comments to satisfy `#![deny(missing_docs)]`.
 
+### 11. [RESOLVED in #29] SentenceDeserializer Panics on Signed Integers, Floats, u128, char, newtype_struct, !fatal, and Field Enums (`src/api/de/mod.rs`)
+Previously, `SentenceDeserializer` forwarded signed integers, floats, `u128`, `char`, `unit_struct`, and `newtype_struct` to `deserialize_any`, which called `unimplemented!()`. Additionally, `!fatal` routed to `EnumVisitor`, whose `unit_variant` called `todo!()`. Furthermore, `deserialize_enum` unconditionally called `self.read_word()`, which consumed subsequent sentence words instead of using `self.current_value` / `self.current_key` when deserializing derived enums used as struct fields or map keys. This was resolved by implementing `parse_primitive` and explicit deserializers for all integer/float/char/newtype types, delegating `deserialize_any` to `deserialize_str`, routing `!fatal` to `"Fatal".into_deserializer()` while returning `Ok(())` from `EnumVisitor::unit_variant`, and consuming `current_value` / `current_key` in `deserialize_enum` before reading new words.
+
 ---
 
 ## 7. Development Guidelines for Agents
