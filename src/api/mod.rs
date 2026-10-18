@@ -335,7 +335,7 @@ fn encode_word(word: &str) -> Vec<u8> {
     res
 }
 
-fn encode_sentence<S: AsRef<str>>(words: &[S]) -> Vec<u8> {
+pub(super) fn encode_sentence<S: AsRef<str>>(words: &[S]) -> Vec<u8> {
     let mut res = vec![];
 
     for w in words {

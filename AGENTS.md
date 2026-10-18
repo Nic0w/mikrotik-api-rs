@@ -190,6 +190,9 @@ Previously, completed calls were never removed from `SharedTagMap` in `event_loo
 - `Cargo.toml` uses `keyword = [...]` instead of `keywords = [...]` (triggers Cargo warning).
 - `md5` and `hex` dependencies are declared in `Cargo.toml` but never used in `src/`. (Likely planned for legacy pre-6.43 RouterOS MD5 challenge-response authentication).
 
+### 8. [RESOLVED in #7] Panics on Untagged Frames and Non-Second .tag Position (`src/api/listener.rs`)
+Previously, `event_loop` assumed `.tag` was strictly the second word in every sentence, using `tag.split_at(5)` and `id.parse().unwrap()`. Untagged `!done` caused an out-of-bounds panic on `"".split_at(5)`, frames where attributes preceded `.tag` were dropped, and malformed tags caused panics. This was resolved by scanning all sentence words with `strip_prefix(".tag=")`, parsing `u16` fallibly, handling `!fatal` independently, and ignoring untagged or malformed frames without crashing.
+
 ---
 
 ## 7. Development Guidelines for Agents
