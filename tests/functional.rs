@@ -845,3 +845,64 @@ async fn test_interfaces_deserialization_live() {
         "expected at least one active interface to have last_link_up populated via last-link-up-time alias"
     );
 }
+
+/// Verifies that SentenceDeserializer handles signed integers, floats, newtype wrappers,
+/// and derived field enums against the live router (Issue #29).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_field_enums_signed_ints_and_newtypes_live() {
+    let mut api = connect_and_login().await;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "kebab-case")]
+    enum LiveInterfaceType {
+        Ether,
+        Bridge,
+        Loopback,
+        #[serde(other)]
+        Other,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct InterfaceId(String);
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct InterfaceWithTypeEnum {
+        #[serde(rename = ".id")]
+        id: InterfaceId,
+        name: String,
+        #[serde(rename = "type")]
+        iface_type: LiveInterfaceType,
+        #[serde(default)]
+        link_downs: Option<i32>,
+        rx_byte: i64,
+        running: bool,
+    }
+
+    let ifaces: Vec<InterfaceWithTypeEnum> = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call("/interface/print", None),
+    )
+    .await
+    .expect("timed out querying interfaces")
+    .expect("failed to deserialize interfaces with enum and signed ints");
+
+    assert!(!ifaces.is_empty(), "expected at least one interface");
+    for iface in ifaces {
+        assert!(!iface.id.0.is_empty(), "id newtype should be populated");
+        assert!(!iface.name.is_empty());
+        assert!(iface.rx_byte >= 0, "rx_byte parsed as signed i64");
+        let _ = iface.running;
+        if let Some(downs) = iface.link_downs {
+            assert!(downs >= 0);
+        }
+        assert!(matches!(
+            iface.iface_type,
+            LiveInterfaceType::Ether
+                | LiveInterfaceType::Bridge
+                | LiveInterfaceType::Loopback
+                | LiveInterfaceType::Other
+        ));
+    }
+}

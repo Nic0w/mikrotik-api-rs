@@ -81,9 +81,9 @@ impl<'de> SentenceDeserializer<'de> {
         }
     }
 
-    fn parse_unsigned<T>(&mut self) -> Result<T>
+    fn parse_primitive<T>(&mut self) -> Result<T>
     where
-        T: FromStr + From<u8>,
+        T: FromStr,
         T::Err: std::error::Error + 'static,
     {
         let text = self.word_part()?;
@@ -98,16 +98,14 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     type Error = DeserializerError;
 
     forward_to_deserialize_any! {
-        i8 i16 i32 i64 i128 u128 f32 f64 char
-        bytes byte_buf unit_struct newtype_struct tuple
-        tuple_struct seq
+        bytes byte_buf tuple tuple_struct seq
     }
 
-    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value>
     where
         V: serde::de::Visitor<'de>,
     {
-        unimplemented!("deserialize_any");
+        self.deserialize_str(visitor)
     }
 
     fn deserialize_struct<V>(
@@ -157,13 +155,20 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.current_value.is_some() || self.current_key.is_some() {
+            let variant = self.word_part()?;
+            return visitor.visit_enum(variant.into_deserializer());
+        }
+
         let word = self.read_word()?;
         self.current_word = Some(word);
 
         match word.as_str() {
             "!done" => visitor.visit_enum("Done".into_deserializer()),
 
-            "!re" | "!trap" | "!fatal" => visitor.visit_enum(EnumVisitor { de: self }),
+            "!fatal" => visitor.visit_enum("Fatal".into_deserializer()),
+
+            "!re" | "!trap" => visitor.visit_enum(EnumVisitor { de: self }),
 
             variant => visitor.visit_enum(variant.into_deserializer()),
         }
@@ -185,6 +190,20 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
         visitor.visit_unit()
     }
 
+    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_unit(visitor)
+    }
+
+    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -195,32 +214,95 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
         self.deserialize_unit(visitor)
     }
 
-    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u64(self.parse_unsigned()?)
+        visitor.visit_i8(self.parse_primitive()?)
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_i16(self.parse_primitive()?)
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_i32(self.parse_primitive()?)
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_i64(self.parse_primitive()?)
+    }
+
+    fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_i128(self.parse_primitive()?)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u8(self.parse_unsigned()?)
+        visitor.visit_u8(self.parse_primitive()?)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u16(self.parse_unsigned()?)
+        visitor.visit_u16(self.parse_primitive()?)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u32(self.parse_unsigned()?)
+        visitor.visit_u32(self.parse_primitive()?)
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_u64(self.parse_primitive()?)
+    }
+
+    fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_u128(self.parse_primitive()?)
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_f32(self.parse_primitive()?)
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_f64(self.parse_primitive()?)
+    }
+
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_char(self.parse_primitive()?)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -309,7 +391,7 @@ impl<'de, 'v> VariantAccess<'de> for EnumVisitor<'v, 'de> {
     type Error = DeserializerError;
 
     fn unit_variant(self) -> Result<()> {
-        todo!("EnumVisitor::unit_variant")
+        Ok(())
     }
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
@@ -775,5 +857,219 @@ mod tests {
             }
             other => panic!("expected Reply, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_deserialize_signed_integers_and_floats() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        struct OpticalDiagnostics {
+            rx_power: f32,
+            tx_power: f64,
+            temperature: i8,
+            signal_dbm: i16,
+            offset_ns: i32,
+            uptime_diff: i64,
+            large_delta: i128,
+            huge_counter: u128,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            ".tag=3".to_string(),
+            "=rx-power=-3.421".to_string(),
+            "=tx-power=-1.505".to_string(),
+            "=temperature=-5".to_string(),
+            "=signal-dbm=-65".to_string(),
+            "=offset-ns=-100000".to_string(),
+            "=uptime-diff=-9876543210".to_string(),
+            "=large-delta=-170141183460469231731687303715884105728".to_string(),
+            "=huge-counter=340282366920938463463374607431768211455".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<OpticalDiagnostics> =
+            deserialize_sentence(&sentence).expect("failed to deserialize diagnostics");
+
+        match res {
+            Response::Reply(diag) => {
+                assert!((diag.rx_power - (-3.421)).abs() < 1e-4);
+                assert!((diag.tx_power - (-1.505)).abs() < 1e-6);
+                assert_eq!(diag.temperature, -5);
+                assert_eq!(diag.signal_dbm, -65);
+                assert_eq!(diag.offset_ns, -100000);
+                assert_eq!(diag.uptime_diff, -9876543210);
+                assert_eq!(diag.large_delta, -170141183460469231731687303715884105728);
+                assert_eq!(diag.huge_counter, 340282366920938463463374607431768211455);
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_char_and_unit_struct() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct DummyUnit;
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct CharAndUnit {
+            letter: char,
+            flag: char,
+            unit: DummyUnit,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=letter=Z".to_string(),
+            "=flag=?".to_string(),
+            "=unit=".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<CharAndUnit> =
+            deserialize_sentence(&sentence).expect("failed to deserialize char and unit");
+
+        match res {
+            Response::Reply(cu) => {
+                assert_eq!(cu.letter, 'Z');
+                assert_eq!(cu.flag, '?');
+                assert_eq!(cu.unit, DummyUnit);
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_newtype_struct() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct InterfaceId(String);
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Frequency(f64);
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        struct WirelessInterface {
+            id: InterfaceId,
+            frequency: Frequency,
+            channel_width: u32,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=id=*1F".to_string(),
+            "=frequency=5180.0".to_string(),
+            "=channel-width=20".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<WirelessInterface> =
+            deserialize_sentence(&sentence).expect("failed to deserialize wireless interface");
+
+        match res {
+            Response::Reply(w) => {
+                assert_eq!(w.id, InterfaceId("*1F".to_string()));
+                assert_eq!(w.frequency, Frequency(5180.0));
+                assert_eq!(w.channel_width, 20);
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_field_enums() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        enum Duplex {
+            Full,
+            Half,
+        }
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        enum InterfaceMode {
+            Station,
+            ApBridge,
+        }
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "kebab-case")]
+        struct PortStatus {
+            name: String,
+            duplex: Duplex,
+            mode: InterfaceMode,
+            speed: String,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            ".tag=42".to_string(),
+            "=name=ether1".to_string(),
+            "=duplex=full".to_string(),
+            "=mode=ap-bridge".to_string(),
+            "=speed=1Gbps".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<PortStatus> =
+            deserialize_sentence(&sentence).expect("failed to deserialize port status with enums");
+
+        match res {
+            Response::Reply(ps) => {
+                assert_eq!(ps.name, "ether1");
+                assert_eq!(ps.duplex, Duplex::Full);
+                assert_eq!(ps.mode, InterfaceMode::ApBridge);
+                assert_eq!(ps.speed, "1Gbps");
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_field_enum_as_map_key() {
+        #[derive(Debug, Deserialize, PartialEq, Eq, Hash)]
+        #[serde(rename_all = "kebab-case")]
+        enum LinkState {
+            Up,
+            Down,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=up=3".to_string(),
+            "=down=1".to_string(),
+            "".to_string(),
+        ];
+
+        let res: Response<HashMap<LinkState, u32>> =
+            deserialize_sentence(&sentence).expect("failed to deserialize map with enum keys");
+
+        match res {
+            Response::Reply(map) => {
+                assert_eq!(map.get(&LinkState::Up), Some(&3));
+                assert_eq!(map.get(&LinkState::Down), Some(&1));
+            }
+            other => panic!("expected Reply, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_fatal_response() {
+        // 1. Bare !fatal
+        let bare_fatal = vec!["!fatal".to_string(), "".to_string()];
+        let res: Response<()> =
+            deserialize_sentence(&bare_fatal).expect("failed to deserialize bare fatal");
+        assert!(matches!(res, Response::Fatal));
+
+        // 2. !fatal with tag and message
+        let fatal_with_msg = vec![
+            "!fatal".to_string(),
+            ".tag=99".to_string(),
+            "router shutting down".to_string(),
+            "".to_string(),
+        ];
+        let res: Response<()> = deserialize_sentence(&fatal_with_msg)
+            .expect("failed to deserialize fatal with message");
+        assert!(matches!(res, Response::Fatal));
     }
 }
