@@ -19,7 +19,6 @@ use crate::api::call::{ArrayListCall, EmptyCall};
 
 use self::{
     call::{AsyncCall, OneShotCall, StreamingCall},
-    error::Error,
     listener::event_loop,
     model::{ActiveUser, Interface, InterfaceChange, Response, SystemResources},
 };
@@ -30,6 +29,9 @@ mod error;
 mod listener;
 pub(crate) mod model;
 mod read;
+
+pub use de::DeserializerError;
+pub use error::Error;
 
 pub trait State {}
 

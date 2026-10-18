@@ -1,13 +1,20 @@
 use std::fmt::Debug;
 use std::io;
 
+/// Top-level error enum representing errors that can occur while communicating with RouterOS.
 #[derive(Debug)]
 pub enum Error {
+    /// Incomplete word or sentence read from the socket, needing more bytes.
     Incomplete,
+    /// Connection reached end of stream (EOF) or was terminated.
     EndOfStream,
+    /// Router returned an empty response (!done without data) when data was expected.
     EmptyResponse,
+    /// Error message returned remotely by the router inside a `!trap` sentence.
     Remote(String),
+    /// Standard I/O error occurred during network communication.
     Io(io::Error),
+    /// Invalid length prefix byte encountered on the wire.
     InvalidWordLength(u8),
 }
 
