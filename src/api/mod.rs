@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicU16, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 use futures::Stream;
 use log::{debug, trace};
-use rand::distributions::{Distribution, Uniform};
 use serde::de::DeserializeOwned;
 use tokio::{
     io::{AsyncWriteExt, BufWriter},
@@ -48,7 +50,7 @@ pub type SharedTagMap = Arc<Mutex<TagMap>>;
 pub struct MikrotikAPI<S: State> {
     output: BufWriter<OwnedWriteHalf>,
     tag_map: SharedTagMap,
-    tag_iter: Box<dyn Iterator<Item = u16>>,
+    next_tag: AtomicU16,
 
     _state: S,
 }
@@ -110,7 +112,7 @@ impl<S: State> MikrotikAPI<S> {
         let mut tag = None;
 
         if let Ok(mut map) = self.tag_map.lock() {
-            let new_tag = tag.get_or_insert(next_tag(&mut self.tag_iter, &map));
+            let new_tag = tag.get_or_insert(next_tag(&self.next_tag, &map));
 
             map.insert(*new_tag, boxed_call);
         }
@@ -142,12 +144,6 @@ impl MikrotikAPI<Disconnected> {
 
         let tag_map: TagMap = HashMap::new();
 
-        let tag_range = Uniform::from(1..u16::MAX);
-
-        let rng = rand::thread_rng();
-
-        let tag_iter = Box::new(tag_range.sample_iter(rng));
-
         let locked_map = Mutex::new(tag_map);
         let shared_map = Arc::new(locked_map);
 
@@ -156,9 +152,9 @@ impl MikrotikAPI<Disconnected> {
         tokio::task::spawn(event_loop(sock_read, map_clone));
 
         Self {
-            tag_iter,
             output,
             tag_map: shared_map,
+            next_tag: AtomicU16::new(1),
             _state: Disconnected,
         }
     }
@@ -183,7 +179,7 @@ impl MikrotikAPI<Disconnected> {
             Done | Reply(_) => Ok(MikrotikAPI {
                 output: self.output,
                 tag_map: self.tag_map,
-                tag_iter: self.tag_iter,
+                next_tag: self.next_tag,
                 _state: Authenticated,
             }),
 
@@ -354,19 +350,22 @@ fn encode_sentence<S: AsRef<str>>(words: &[S]) -> Vec<u8> {
 
 const MAX_TAGS: usize = (u16::MAX - 1) as usize; // 65534 valid tags (1..u16::MAX)
 
-fn next_tag(tag_iter: &mut dyn Iterator<Item = u16>, unlocked_map: &MutexGuard<TagMap>) -> u16 {
-    // Try sampling random tags from the iterator first.
-    for _ in 0..128 {
-        if let Some(tag) = tag_iter.next() {
-            if !unlocked_map.contains_key(&tag) {
-                return tag;
-            }
-        }
+fn next_tag(next_tag: &AtomicU16, unlocked_map: &MutexGuard<TagMap>) -> u16 {
+    if unlocked_map.len() >= MAX_TAGS {
+        panic!(
+            "Tag space exhausted: all {} tags are currently in use",
+            MAX_TAGS
+        );
     }
 
-    // If random sampling collided repeatedly or tag space is heavily populated,
-    // fall back to a linear scan to find an available tag.
-    for tag in 1..u16::MAX {
+    // Sequentially advance through tags in 1..=65534 until an unoccupied tag is found
+    for _ in 0..MAX_TAGS {
+        let tag = next_tag
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
+                Some(if val >= 65534 { 1 } else { val + 1 })
+            })
+            .unwrap();
+
         if !unlocked_map.contains_key(&tag) {
             return tag;
         }
@@ -526,30 +525,54 @@ mod tests {
     }
 
     #[test]
-    fn test_next_tag_basic_and_collision() {
+    fn test_mikrotik_api_implements_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::MikrotikAPI<super::Disconnected>>();
+        assert_send::<super::MikrotikAPI<super::Authenticated>>();
+    }
+
+    #[test]
+    fn test_next_tag_sequential_increment_and_collision() {
         use super::{next_tag, EmptyCall, TagMap};
+        use std::sync::atomic::AtomicU16;
         use std::sync::Mutex;
 
         let map = Mutex::new(TagMap::new());
         let mut guarded = map.lock().unwrap();
 
-        // Single repeated tag in iterator
-        let mut iter = std::iter::repeat(42u16);
-        assert_eq!(next_tag(&mut iter, &guarded), 42);
+        let counter = AtomicU16::new(1);
+        assert_eq!(next_tag(&counter, &guarded), 1);
+        assert_eq!(next_tag(&counter, &guarded), 2);
 
-        // Insert 42 into map
-        guarded.insert(42, Box::new(EmptyCall::new()));
+        // Insert tag 3 into map (simulate active in-flight call)
+        guarded.insert(3, Box::new(EmptyCall::new()));
 
-        // Iterator still yields 42, but next_tag should skip it and fall back to linear scan
-        let mut iter2 = std::iter::repeat(42u16);
-        let tag = next_tag(&mut iter2, &guarded);
-        assert_ne!(tag, 42);
-        assert_eq!(tag, 1);
+        // Next tag should skip 3 and return 4
+        assert_eq!(next_tag(&counter, &guarded), 4);
+        assert_eq!(next_tag(&counter, &guarded), 5);
+    }
+
+    #[test]
+    fn test_next_tag_wrap_around() {
+        use super::{next_tag, TagMap};
+        use std::sync::atomic::AtomicU16;
+        use std::sync::Mutex;
+
+        let map = Mutex::new(TagMap::new());
+        let guarded = map.lock().unwrap();
+
+        let counter = AtomicU16::new(65533);
+        assert_eq!(next_tag(&counter, &guarded), 65533);
+        assert_eq!(next_tag(&counter, &guarded), 65534);
+        // Wraps around to 1
+        assert_eq!(next_tag(&counter, &guarded), 1);
+        assert_eq!(next_tag(&counter, &guarded), 2);
     }
 
     #[test]
     fn test_next_tag_panics_on_exhaustion() {
         use super::{next_tag, EmptyCall, TagMap, MAX_TAGS};
+        use std::sync::atomic::AtomicU16;
         use std::sync::Mutex;
 
         let map = Mutex::new(TagMap::new());
@@ -561,9 +584,9 @@ mod tests {
         }
         assert_eq!(guarded.len(), MAX_TAGS);
 
-        let mut iter = 1..u16::MAX;
+        let counter = AtomicU16::new(1);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            next_tag(&mut iter, &guarded);
+            next_tag(&counter, &guarded);
         }));
 
         assert!(

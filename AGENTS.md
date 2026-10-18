@@ -108,7 +108,7 @@ let resources = api.system_resources().await?;
   - `BufWriter<OwnedWriteHalf>`: Kept in `MikrotikAPI` for writing outgoing commands.
 - Shared State: `SharedTagMap` (`Arc<Mutex<HashMap<u16, Box<dyn AsyncCall + Send + Sync>>>>`).
 - For each request:
-  1. A random tag `u16` (1..65535) is generated, guaranteeing no collision with active keys in `tag_map`.
+  1. An incremental tag `u16` (1..=65534) is generated via `AtomicU16` with wrap-around, guaranteeing no collision with active keys in `tag_map`.
   2. The call handler is registered into `tag_map`.
   3. The request is transmitted with `.tag=<tag_id>`.
   4. The background `event_loop` reads sentences, parses `.tag`, and calls `push_reply()` or `done()` on the registered handler.
