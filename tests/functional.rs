@@ -697,3 +697,56 @@ async fn test_mikrotik_api_send_and_spawn_across_threads() {
 
     assert!(!name.is_empty(), "router identity name should not be empty");
 }
+
+/// Verifies that frame parsing and tag handling in event_loop handle varied RouterOS replies
+/// cleanly without dropping frames or panicking (Issue #7).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_event_loop_frame_dispatching_and_tag_handling() {
+    let mut api = connect_and_login().await;
+
+    // 1. OneShotCall: /system/identity/print
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out fetching identity")
+    .expect("fetching identity failed");
+    assert!(!identity.name.is_empty());
+
+    // 2. ArrayListCall: /interface/print with proplist
+    let interfaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[(".proplist", "name,type,running")]),
+        ),
+    )
+    .await
+    .expect("timed out fetching interfaces with proplist")
+    .expect("fetching interfaces failed");
+    assert!(!interfaces.is_empty());
+
+    // 3. BasicResources: multiple attributes returned by router
+    let res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<BasicResources>("/system/resource/print", None),
+    )
+    .await
+    .expect("timed out fetching system resources")
+    .expect("system_resources call failed");
+    assert!(!res.version.is_empty());
+
+    // 4. Multiple rapid queries in succession
+    for _ in 0..5 {
+        let id = timeout(
+            Duration::from_secs(5),
+            api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+        )
+        .await
+        .expect("timed out in loop")
+        .expect("call in loop failed");
+        assert_eq!(id.name, identity.name);
+    }
+}

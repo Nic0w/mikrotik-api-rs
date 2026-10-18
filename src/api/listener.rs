@@ -43,6 +43,13 @@ async fn try_read_sentence<R: AsyncRead + Unpin>(
     }
 }
 
+enum FrameType {
+    Reply,
+    Done,
+}
+
+/// Background event loop that reads sentences from the socket, demultiplexes responses
+/// by `.tag`, and notifies registered async callers.
 pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap) {
     let mut buffer = BytesMut::with_capacity(16384);
 
@@ -51,61 +58,65 @@ pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap)
     loop {
         match try_read_sentence(&mut socket, &mut buffer).await {
             Ok(sentence) => {
-                let mut iter = sentence.iter();
+                let control_word = sentence.first().map(String::as_str);
 
-                let first = iter.next().map(String::as_str);
-                let second = iter.next().map(String::as_str);
-
-                let both = first.zip(second);
-
-                enum FrameType {
-                    Reply,
-                    Done,
+                if control_word == Some("!fatal") {
+                    let message = sentence
+                        .get(1..)
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter(|w| !w.is_empty())
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    error!("received !fatal from the router: {}", message);
+                    break;
                 }
 
-                use FrameType::*;
-                let tuple = match both {
-                    Some(("!re", tag)) | Some(("!trap", tag)) if tag.starts_with(".tag") => {
-                        Some((Reply, tag))
+                let frame_type = match control_word {
+                    Some("!re") | Some("!trap") => FrameType::Reply,
+                    Some("!done") => FrameType::Done,
+                    _ => {
+                        warn!("unknown frame type or empty sentence: {:?}", sentence);
+                        continue;
                     }
-                    Some(("!done", tag)) => Some((Done, tag)),
+                };
 
-                    Some(("!fatal", message)) => {
-                        error!("received !fatal from the router: {}", message);
-                        break;
+                // Fallibly locate `.tag=<u16>` anywhere in the sentence (skipping the control word)
+                let tag_id = sentence
+                    .iter()
+                    .skip(1)
+                    .find_map(|w| w.strip_prefix(".tag="))
+                    .and_then(|id| id.parse::<u16>().ok());
+
+                let id = match tag_id {
+                    Some(id) => id,
+                    None => {
+                        warn!("ignoring frame without valid .tag: {:?}", sentence);
+                        continue;
                     }
+                };
 
-                    unknown => {
-                        warn!("unknown frame type: {:?}", unknown);
-                        None
-                    }
-                }
-                .map(|(f_type, tag)| {
-                    let (_, id) = tag.split_at(5);
-
-                    let id: u16 = id.parse().unwrap();
-
-                    (f_type, id)
-                });
-
-                if let Some((frame_type, id)) = tuple {
-                    if let Ok(mut guarded_map) = tags.lock() {
-                        match frame_type {
-                            Reply => {
-                                if let Some(caller) = guarded_map.get_mut(&id) {
-                                    if let Err(e) = caller.push_reply(sentence) {
-                                        error!("on push_reply: {:?}", e);
-                                        break;
-                                    }
+                if let Ok(mut guarded_map) = tags.lock() {
+                    match frame_type {
+                        FrameType::Reply => {
+                            if let Some(caller) = guarded_map.get_mut(&id) {
+                                if let Err(e) = caller.push_reply(sentence) {
+                                    error!("on push_reply: {:?}", e);
+                                    break;
                                 }
+                            } else {
+                                trace!("push_reply: no active caller for tag {}", id);
                             }
-                            Done => {
-                                if let Some(mut caller) = guarded_map.remove(&id) {
-                                    if let Err(e) = caller.done() {
-                                        error!("on done: {:?}", e);
-                                        break;
-                                    }
+                        }
+                        FrameType::Done => {
+                            if let Some(mut caller) = guarded_map.remove(&id) {
+                                if let Err(e) = caller.done() {
+                                    error!("on done: {:?}", e);
+                                    break;
                                 }
+                            } else {
+                                trace!("done: no active caller for tag {}", id);
                             }
                         }
                     }
@@ -136,7 +147,7 @@ mod tests {
     use super::*;
     use crate::api::{
         call::{ArrayListCall, OneShotCall, StreamingCall},
-        Response, TagMap,
+        encode_sentence, Response, TagMap,
     };
     use futures::StreamExt;
     use std::{
@@ -389,5 +400,227 @@ mod tests {
         assert!(matches!(res, Response::Fatal));
         // And tag map should be drained
         assert_eq!(shared_map.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_ignores_untagged_done_without_panic() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<()>::new();
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // 1. Send untagged `!done` (wire: `["!done"]` followed by 0-length word)
+        client_write
+            .write_all(&encode_sentence(&["!done"]))
+            .await
+            .unwrap();
+
+        // 2. Send tagged `!done .tag=1`
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=1"]))
+            .await
+            .unwrap();
+
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out after untagged and tagged !done");
+        assert!(matches!(res, Response::Done));
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_tag_in_arbitrary_position() {
+        let (mut client_write, server_read) = tokio::io::duplex(512);
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            name: String,
+        }
+
+        let array = ArrayListCall::<Item>::new();
+        let oneshot = OneShotCall::<()>::new();
+
+        let mut map = TagMap::new();
+        map.insert(10, Box::new(array.clone()));
+        map.insert(20, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Tag 10: `!re` where attributes precede `.tag=10`
+        client_write
+            .write_all(&encode_sentence(&[
+                "!re",
+                "=name=ether1",
+                "=type=ether",
+                ".tag=10",
+            ]))
+            .await
+            .unwrap();
+
+        // Tag 10: `!done` where return value precedes `.tag=10`
+        client_write
+            .write_all(&encode_sentence(&["!done", "=ret=0", ".tag=10"]))
+            .await
+            .unwrap();
+
+        let array_res = timeout(Duration::from_secs(1), array)
+            .await
+            .expect("ArrayListCall timed out");
+        assert_eq!(array_res.len(), 1);
+        if let Response::Reply(ref item) = array_res[0] {
+            assert_eq!(item.name, "ether1");
+        } else {
+            panic!("expected Response::Reply");
+        }
+
+        // Tag 20: `!done` where return value precedes `.tag=20`
+        client_write
+            .write_all(&encode_sentence(&["!done", "=ret=*1", ".tag=20"]))
+            .await
+            .unwrap();
+
+        let oneshot_res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out");
+        assert!(matches!(oneshot_res, Response::Done));
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_malformed_tags_gracefully() {
+        let (mut client_write, server_read) = tokio::io::duplex(512);
+
+        let oneshot = OneShotCall::<()>::new();
+        let mut map = TagMap::new();
+        map.insert(42, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Send frames with malformed, invalid, or overflow tags
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=abc"]))
+            .await
+            .unwrap();
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag="]))
+            .await
+            .unwrap();
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=70000"])) // overflows u16
+            .await
+            .unwrap();
+        client_write
+            .write_all(&encode_sentence(&["!re", "=name=foo", ".tag"]))
+            .await
+            .unwrap();
+
+        // Follow with valid `.tag=42`
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=42"]))
+            .await
+            .unwrap();
+
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out after malformed tags");
+        assert!(matches!(res, Response::Done));
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_untagged_fatal_cleanly() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<()>::new();
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Send untagged `!fatal` with a message
+        client_write
+            .write_all(&encode_sentence(&["!fatal", "router shutting down"]))
+            .await
+            .unwrap();
+
+        // Loop should exit cleanly without panic
+        timeout(Duration::from_secs(1), loop_handle)
+            .await
+            .expect("event_loop hung on !fatal")
+            .expect("event_loop panicked on !fatal");
+
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out after !fatal");
+        assert!(matches!(res, Response::Fatal));
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_bare_fatal_without_message() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<()>::new();
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Send bare `!fatal` (only 1 word in sentence)
+        client_write
+            .write_all(&encode_sentence(&["!fatal"]))
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(1), loop_handle)
+            .await
+            .expect("event_loop hung on bare !fatal")
+            .expect("event_loop panicked on bare !fatal");
+
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out after bare !fatal");
+        assert!(matches!(res, Response::Fatal));
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_handles_unknown_and_empty_frames_gracefully() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<()>::new();
+        let mut map = TagMap::new();
+        map.insert(99, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Send unknown frame and empty sentence
+        client_write
+            .write_all(&encode_sentence(&["!unknown_custom", "=key=val"]))
+            .await
+            .unwrap();
+        // Bare 0x00 terminates an empty sentence `[""]`
+        client_write.write_all(&[0x00]).await.unwrap();
+
+        // Valid frame for tag 99 follows
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=99"]))
+            .await
+            .unwrap();
+
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out after unknown/empty frames");
+        assert!(matches!(res, Response::Done));
+        assert!(shared_map.lock().unwrap().is_empty());
     }
 }
