@@ -672,3 +672,28 @@ async fn test_non_ascii_query_and_response_handling() {
     .expect("follow-up call failed");
     assert!(!identity.name.is_empty());
 }
+
+/// Verifies that MikrotikAPI implements Send and can be passed across thread boundaries
+/// into `tokio::spawn` worker tasks (Issue #9).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_mikrotik_api_send_and_spawn_across_threads() {
+    let api = connect_and_login().await;
+
+    // Move `api` across thread boundary into a background tokio worker task
+    let handle = tokio::spawn(async move {
+        let mut api = api;
+        let identity = api
+            .generic_oneshot_call::<Identity>("/system/identity/print", None)
+            .await
+            .expect("call failed inside spawned tokio task");
+        identity.name
+    });
+
+    let name = timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("timed out waiting for spawned tokio task")
+        .expect("spawned task panicked");
+
+    assert!(!name.is_empty(), "router identity name should not be empty");
+}
