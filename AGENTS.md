@@ -193,6 +193,9 @@ Previously, completed calls were never removed from `SharedTagMap` in `event_loo
 ### 8. [RESOLVED in #7] Panics on Untagged Frames and Non-Second .tag Position (`src/api/listener.rs`)
 Previously, `event_loop` assumed `.tag` was strictly the second word in every sentence, using `tag.split_at(5)` and `id.parse().unwrap()`. Untagged `!done` caused an out-of-bounds panic on `"".split_at(5)`, frames where attributes preceded `.tag` were dropped, and malformed tags caused panics. This was resolved by scanning all sentence words with `strip_prefix(".tag=")`, parsing `u16` fallibly, handling `!fatal` independently, and ignoring untagged or malformed frames without crashing.
 
+### 9. [RESOLVED in #10] Deserialization Failures on Unexpected Fields, >=4GiB Memory, and Version-Dependent Models
+Previously, `SystemResources` defined memory/HDD fields as `u32`, which overflowed on routers with $\ge 4\text{ GiB}$ RAM (`total-memory=4294967296`), and required `factory-software` which CHR/x86 omit. Additionally, `Interface` declared non-optional fields (`actual_mtu`, FastPath counters `fp_*`, `tx_queue_drop`, `link_downs`) that are omitted on virtual/tunnel interfaces or platforms without FastPath, and `InterfaceMTU::Value` / `actual_mtu` were typed as `u16` which overflowed on loopback interfaces (`lo` with `65536` MTU). Furthermore, RouterOS 7 uses `last-link-up-time` instead of `last-link-up`. This was resolved by widening memory/HDD fields to `u64`, MTUs to `u32`, marking platform/interface-dependent fields as `Option<T>` with `#[serde(default)]`, adding alias `last-link-up-time`, and ensuring `deserialize_ignored_any` completely clears word/key/value state.
+
 ---
 
 ## 7. Development Guidelines for Agents
