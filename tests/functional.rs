@@ -750,3 +750,98 @@ async fn test_event_loop_frame_dispatching_and_tag_handling() {
         assert_eq!(id.name, identity.name);
     }
 }
+
+/// Verifies that SystemResources deserialization succeeds against the live router,
+/// correctly handling memory >= 4 GiB (u64), optional factory-software, and unexpected fields (Issue #10).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_system_resources_deserialization_live() {
+    let mut api = connect_and_login().await;
+
+    let resources = timeout(Duration::from_secs(5), api.system_resources())
+        .await
+        .expect("timed out fetching system resources")
+        .expect("system_resources deserialization failed on live router");
+
+    println!(
+        "Live SystemResources: board={}, arch={}, version={}, total_mem={}, free_mem={}",
+        resources.board_name,
+        resources.architecture_name,
+        resources.version,
+        resources.total_memory,
+        resources.free_memory
+    );
+
+    assert!(!resources.board_name.is_empty());
+    assert!(!resources.version.is_empty());
+    assert_eq!(resources.platform, "MikroTik");
+    assert!(
+        resources.total_memory > 0,
+        "total_memory should be non-zero"
+    );
+    assert!(resources.free_memory > 0, "free_memory should be non-zero");
+    assert!(
+        resources.total_hdd_space > 0,
+        "total_hdd_space should be non-zero"
+    );
+
+    // On CCR2004-16G-2S+, total_memory is 4294967296 (4 GiB), which previously overflowed u32
+    if resources.board_name.contains("CCR2004") {
+        assert_eq!(
+            resources.total_memory, 4294967296,
+            "CCR2004 should have 4 GiB of RAM (4294967296 bytes)"
+        );
+        assert!(
+            resources.factory_software.is_some(),
+            "CCR2004 hardware should report factory-software"
+        );
+    }
+}
+
+/// Verifies that Interface deserialization succeeds across all interfaces on the live router,
+/// correctly handling optional FastPath counters, optional MTU / actual-mtu, and RouterOS 7
+/// last-link-up-time alias (Issue #10).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_interfaces_deserialization_live() {
+    let mut api = connect_and_login().await;
+
+    let ifaces = timeout(Duration::from_secs(5), api.interfaces())
+        .await
+        .expect("timed out fetching interfaces")
+        .expect("interfaces deserialization failed on live router");
+
+    println!("Successfully deserialized {} live interfaces", ifaces.len());
+    assert!(
+        !ifaces.is_empty(),
+        "router should have at least one interface"
+    );
+
+    let mut found_last_link_up = false;
+    let mut found_mtu = false;
+
+    for iface in &ifaces {
+        assert!(!iface.id.is_empty(), "interface ID should not be empty");
+        assert!(!iface.name.is_empty(), "interface name should not be empty");
+        assert!(
+            !iface.iface_type.is_empty(),
+            "interface type should not be empty"
+        );
+
+        if iface.last_link_up.is_some() {
+            found_last_link_up = true;
+        }
+        if iface.mtu.is_some() {
+            found_mtu = true;
+        }
+    }
+
+    assert!(
+        found_mtu,
+        "expected at least one interface to have an MTU configured"
+    );
+    assert!(
+        found_last_link_up,
+        "expected at least one active interface to have last_link_up populated via last-link-up-time alias"
+    );
+}
