@@ -1,15 +1,22 @@
 use std::{borrow::Cow, fmt::Display};
 
+/// Errors occurring during sentence deserialization into Rust data types.
 #[derive(Debug)]
 pub enum DeserializerError {
+    /// Missing word required to complete the sentence.
     MissingWord,
+    /// Failed to parse key from the current word.
     MissingKey,
+    /// Failed to parse value from the current word.
     MissingValue,
+    /// Value could not be parsed into the expected primitive type.
     BadPrimitiveValue(Box<dyn std::error::Error>),
+    /// Custom deserializer error message.
     Custom(Cow<'static, str>),
 }
 
 impl DeserializerError {
+    /// Create a new custom deserializer error.
     pub fn custom<T>(text: T) -> Self
     where
         T: Into<Cow<'static, str>>,

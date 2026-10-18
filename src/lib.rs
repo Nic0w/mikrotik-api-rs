@@ -89,9 +89,9 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 mod api;
 
 pub use api::model::{
-    ActiveUser, Interface, InterfaceChange, InterfaceMTU, Response, SystemResources,
+    ActiveUser, Interface, InterfaceChange, InterfaceMTU, Response, SystemResources, TrapCategory,
 };
-pub use api::{Authenticated, Disconnected, MikrotikAPI};
+pub use api::{Authenticated, DeserializerError, Disconnected, Error, MikrotikAPI};
 
 /// Given an address, opens a connection to the remote API service
 /// the returned object is in a Disconnected state
@@ -99,4 +99,44 @@ pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<MikrotikAPI<Discon
     let socket = TcpStream::connect(addr).await?;
 
     Ok(MikrotikAPI::new(socket))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_public_reexports_accessible() {
+        // Verify Error and its variants are publicly accessible and usable
+        let err = Error::Remote("permission denied".to_string());
+        match &err {
+            Error::Remote(msg) => assert_eq!(msg, "permission denied"),
+            _ => panic!("unexpected error variant"),
+        }
+        assert_eq!(format!("{}", err), "error from router: permission denied");
+
+        // Verify DeserializerError is publicly accessible and usable
+        let de_err = DeserializerError::MissingWord;
+        match &de_err {
+            DeserializerError::MissingWord => {}
+            _ => panic!("unexpected deserializer error variant"),
+        }
+
+        // Verify TrapCategory is publicly accessible and usable
+        let category = TrapCategory::ArgumentValueFailure;
+        assert_eq!(category as u8, 1);
+        let resp: Response<()> = Response::Trap {
+            category: Some(TrapCategory::MissingItemOrCommand),
+            message: "no such item".to_string(),
+        };
+        match resp {
+            Response::Trap {
+                category: Some(TrapCategory::MissingItemOrCommand),
+                message,
+            } => {
+                assert_eq!(message, "no such item");
+            }
+            _ => panic!("unexpected response variant"),
+        }
+    }
 }
