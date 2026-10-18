@@ -639,3 +639,36 @@ async fn test_deserialize_hashmap_and_trap_with_equals() {
 
     assert!(!identity.name.is_empty());
 }
+
+/// Verifies that words containing non-ASCII / UTF-8 characters in queries or responses
+/// are safely handled without UB or panics (Issue #8).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_non_ascii_query_and_response_handling() {
+    let mut api = connect_and_login().await;
+
+    // Send a query containing non-ASCII characters (e.g. searching for an interface with accents/symbols)
+    let res = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<InterfaceName>(
+            "/interface/print",
+            Some(&[("?name", "café-éèà-test-🚀")]),
+        ),
+    )
+    .await
+    .expect("timed out querying interface with non-ASCII name")
+    .expect("query with non-ASCII characters failed");
+
+    // Router should return an empty list without error or corruption
+    assert!(res.is_empty());
+
+    // Follow-up standard call to ensure connection remains fully functional
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out on follow-up identity call")
+    .expect("follow-up call failed");
+    assert!(!identity.name.is_empty());
+}
