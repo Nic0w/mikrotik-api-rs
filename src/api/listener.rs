@@ -13,17 +13,21 @@ async fn try_read_sentence<R: AsyncRead + Unpin>(
     loop {
         let mut cursor = Cursor::new(&buffer[..]);
 
-        if let Ok(sentence) = read_sentence(&mut cursor) {
-            let res = sentence.iter().map(|t| t.to_string()).collect();
+        match read_sentence(&mut cursor) {
+            Ok(sentence) => {
+                let res: Vec<String> = sentence.into_iter().map(|t| t.into_owned()).collect();
 
-            let consumed = cursor.position() as usize;
+                let consumed = cursor.position() as usize;
 
-            debug!("try_read_sentence: read new sentence ({} bytes).", consumed);
-            trace!("try_read_sentence: {:?}", sentence);
+                debug!("try_read_sentence: read new sentence ({} bytes).", consumed);
+                trace!("try_read_sentence: {:?}", res);
 
-            buffer.advance(consumed);
+                buffer.advance(consumed);
 
-            return Ok(res);
+                return Ok(res);
+            }
+            Err(Error::Incomplete) => {}
+            Err(e) => return Err(e),
         }
 
         let new_bytes = reader.read_buf(buffer).await?;
@@ -361,5 +365,29 @@ mod tests {
         // Now shared_map MUST be completely empty (0 entries)
         assert_eq!(shared_map.lock().unwrap().len(), 0);
         assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_exits_and_notifies_callers_on_invalid_word_length() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let oneshot = OneShotCall::<()>::new();
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Write an invalid length prefix byte (e.g. 0xF5)
+        client_write.write_all(&[0xF5, 0x00, 0x00]).await.unwrap();
+
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out on invalid length prefix byte");
+
+        // The caller should be notified of fatal termination
+        assert!(matches!(res, Response::Fatal));
+        // And tag map should be drained
+        assert_eq!(shared_map.lock().unwrap().len(), 0);
     }
 }

@@ -8,6 +8,7 @@ pub enum Error {
     EmptyResponse,
     Remote(String),
     Io(io::Error),
+    InvalidWordLength(u8),
 }
 
 impl From<io::Error> for Error {
@@ -29,6 +30,8 @@ impl std::fmt::Display for Error {
             Remote(msg) => write!(f, "error from router: {}", msg),
 
             Io(e) => std::fmt::Display::fmt(&e, f),
+
+            InvalidWordLength(b) => write!(f, "invalid word length prefix byte: {:#04x}", b),
         }
     }
 }
