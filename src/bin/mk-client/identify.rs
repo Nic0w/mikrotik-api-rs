@@ -16,14 +16,14 @@ impl Display for PrettyRessources {
         writeln!(
             f,
             "Memory (free/total): {} / {}",
-            human_bytes(self.0.free_memory),
-            human_bytes(self.0.total_memory)
+            human_bytes(self.0.free_memory as f64),
+            human_bytes(self.0.total_memory as f64)
         )?;
         write!(
             f,
             "HDD (free/total): {} / {}",
-            human_bytes(self.0.free_hdd_space),
-            human_bytes(self.0.total_hdd_space)
+            human_bytes(self.0.free_hdd_space as f64),
+            human_bytes(self.0.total_hdd_space as f64)
         )?;
 
         Ok(())
