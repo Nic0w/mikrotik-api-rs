@@ -196,6 +196,9 @@ Previously, `event_loop` assumed `.tag` was strictly the second word in every se
 ### 9. [RESOLVED in #10] Deserialization Failures on Unexpected Fields, >=4GiB Memory, and Version-Dependent Models
 Previously, `SystemResources` defined memory/HDD fields as `u32`, which overflowed on routers with $\ge 4\text{ GiB}$ RAM (`total-memory=4294967296`), and required `factory-software` which CHR/x86 omit. Additionally, `Interface` declared non-optional fields (`actual_mtu`, FastPath counters `fp_*`, `tx_queue_drop`, `link_downs`) that are omitted on virtual/tunnel interfaces or platforms without FastPath, and `InterfaceMTU::Value` / `actual_mtu` were typed as `u16` which overflowed on loopback interfaces (`lo` with `65536` MTU). Furthermore, RouterOS 7 uses `last-link-up-time` instead of `last-link-up`. This was resolved by widening memory/HDD fields to `u64`, MTUs to `u32`, marking platform/interface-dependent fields as `Option<T>` with `#[serde(default)]`, adding alias `last-link-up-time`, and ensuring `deserialize_ignored_any` completely clears word/key/value state.
 
+### 10. [RESOLVED in #30] Missing Public Re-Exports for Error, DeserializerError, and TrapCategory (`src/lib.rs`)
+Previously, `Error`, `DeserializerError`, and `TrapCategory` were defined in private submodules without being re-exported in `src/lib.rs`, preventing downstream callers from naming `mikrotik_api::Error` or matching on `TrapCategory` and `Error` variants. This was resolved by re-exporting all three types at the crate root in `src/lib.rs` and adding complete doc comments to satisfy `#![deny(missing_docs)]`.
+
 ---
 
 ## 7. Development Guidelines for Agents
