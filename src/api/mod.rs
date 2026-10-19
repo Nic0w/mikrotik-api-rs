@@ -79,7 +79,7 @@ impl<S: State> MikrotikAPI<S> {
                 } else {
                     sentence.push(format!("{}={}", key, value));
                 }
-            } else if key.starts_with(&['.', '=']) {
+            } else if key.starts_with(['.', '=']) {
                 //.proplist, .tag
                 sentence.push(format!("{}={}", key, value));
             } else {
@@ -96,7 +96,7 @@ impl<S: State> MikrotikAPI<S> {
         Ok(())
     }
 
-    async fn do_call<'a, T>(
+    async fn do_call<T>(
         &mut self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
