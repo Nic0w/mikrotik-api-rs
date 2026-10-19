@@ -304,6 +304,11 @@ impl MikrotikAPI<Authenticated> {
 }
 
 fn encode_len_usize(len: usize) -> Vec<u8> {
+    assert!(
+        len <= u32::MAX as usize,
+        "word length {len} exceeds maximum RouterOS protocol length of 4GiB (u32::MAX)"
+    );
+
     let mut res = Vec::with_capacity(5);
 
     if len <= 0x7F {
@@ -595,5 +600,12 @@ mod tests {
             result.is_err(),
             "expected next_tag to panic on tag exhaustion"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds maximum RouterOS protocol length")]
+    #[cfg(target_pointer_width = "64")]
+    fn test_encode_len_exceeds_u32_max_panics() {
+        encode_len_usize((u32::MAX as usize) + 1);
     }
 }
