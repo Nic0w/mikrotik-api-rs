@@ -12,7 +12,7 @@ In essence, the API is highly asynchronous and multiplexes responses to requests
 
 Based on tokio and fully asynchronous, the library allows to deal with all the API's uses cases :
  - simple requests with one-off answers, like `/system/identity/print`,
- - simple requests with array-like answers, like `/interfaces/print`,
+ - simple requests with array-like answers, like `/interface/print`,
  - simple requests to listen to events, like `/user/active/listen`,
  - cancel streaming commands with `/cancel`
 
@@ -26,7 +26,7 @@ It is then necessary to `authenticate` to get a `MikrotikAPI<Authenticated>` obj
 
 Eight functions are then available:
  - `system_resources` will make a call to `/system/resource/print`
- - `interfaces` will retrieve a list of interfaces with all their properties (``/interfaces/print``)
+ - `interfaces` will retrieve a list of interfaces with all their properties (``/interface/print``)
  - `active_users` returns a `Stream` of events regarding user activity (login & logout)
  - `interfaces_changes` (or `interface_changes`) returns a `Stream` of events regarding changes to interfaces (up, down, ...)
  - `cancel` cancels a streaming command given its tag
@@ -80,10 +80,10 @@ tokio::spawn(changes.for_each(|item| async move {
  As of now it serves more as an example of library usage rather than having a real, purposeful goal.
  
  ```
-mikrotik_api 0.1.0
+mk-client 0.1.0
 
 USAGE:
-    client --address <ADDRESS> --login <LOGIN> --password <PASSWORD> <SUBCOMMAND>
+    mk-client --address <ADDRESS> --login <LOGIN> --password <PASSWORD> <SUBCOMMAND>
 
 OPTIONS:
     -A, --address <ADDRESS>      <HOST>:<PORT>
@@ -104,7 +104,7 @@ Right now it comes with three subcommands:
  - `custom`, the best of all, allows to call arbitrary commands of all sorts (one-off, arraylist, streaming). Example, listening in real-time to log events:
   
 ```bash
-$ target/release/client -A 192.168.88.1:8728 -L admin -P "P@ssw0rd" custom --listen "/log/listen"
+$ target/release/mk-client -A 192.168.88.1:8728 -L admin -P "P@ssw0rd" custom --listen "/log/listen"
 2022-09-07T21:38:04.659Z INFO [client::custom] New event:
 {
     ".id": "*1CB36",

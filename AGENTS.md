@@ -175,9 +175,8 @@ Previously, `cx.waker().wake_by_ref()` was called unconditionally inside `poll()
 ### 3. [RESOLVED in #5] Tag Map Memory Leak
 Previously, completed calls were never removed from `SharedTagMap` in `event_loop` on `!done`, causing unbounded memory growth and eventually exhausting the `u16` tag space. This was resolved by removing tags from `SharedTagMap` upon receiving `FrameType::Done` in `event_loop`, and adding tag exhaustion protection with deterministic linear scan fallback in `next_tag`.
 
-### 4. Failing Doctests in `src/lib.rs`
-- The code blocks in `src/lib.rs` documentation are missing imports, have typo `Reponse` instead of `Response`, and lack an async runtime runner.
-- They should either be marked ````rust,no_run` / ````rust,ignore` or written as valid doctests with hidden `#` boilerplate.
+### 4. [RESOLVED] Failing Doctests in `src/lib.rs`
+The code blocks in `src/lib.rs` documentation were updated with valid imports and async runners, verified by `cargo test --doc`.
 
 ### 5. Dead / Abandoned Files
 - `src/api/blocking/de.rs`: Not exposed or used anywhere in the codebase. Contains leftover debugging prints (`println!("prout")`). Do not import or modify.
@@ -201,6 +200,9 @@ Previously, `Error`, `DeserializerError`, and `TrapCategory` were defined in pri
 
 ### 11. [RESOLVED in #29] SentenceDeserializer Panics on Signed Integers, Floats, u128, char, newtype_struct, !fatal, and Field Enums (`src/api/de/mod.rs`)
 Previously, `SentenceDeserializer` forwarded signed integers, floats, `u128`, `char`, `unit_struct`, and `newtype_struct` to `deserialize_any`, which called `unimplemented!()`. Additionally, `!fatal` routed to `EnumVisitor`, whose `unit_variant` called `todo!()`. Furthermore, `deserialize_enum` unconditionally called `self.read_word()`, which consumed subsequent sentence words instead of using `self.current_value` / `self.current_key` when deserializing derived enums used as struct fields or map keys. This was resolved by implementing `parse_primitive` and explicit deserializers for all integer/float/char/newtype types, delegating `deserialize_any` to `deserialize_str`, routing `!fatal` to `"Fatal".into_deserializer()` while returning `Ok(())` from `EnumVisitor::unit_variant`, and consuming `current_value` / `current_key` in `deserialize_enum` before reading new words.
+
+### 12. [RESOLVED in #31] Code Quality, Safety, CLI Ergonomics & Documentation Cleanup
+Previously, `TrapCategory::deserialize` used `unsafe { core::mem::transmute(category) }`, triggering Clippy warnings. Clippy also warned on needless borrows and unused lifetimes in `src/api/mod.rs`. `encode_len_usize` silently truncated lengths > 4GiB on 64-bit systems. `mk-client` had typos (`mutualy exculisve`, `ressources`) and used raw `unwrap()` calls on connection/authentication/request failures. Documentation incorrectly referred to `/interfaces/print` and binary name `client`. These were resolved by using a safe `match` for `TrapCategory`, resolving Clippy warnings, asserting `len <= u32::MAX as usize` in `encode_len_usize`, adding proper error handling in `mk-client`, fixing documentation command paths and binary names, and adding `.DS_Store` to `.gitignore`.
 
 ---
 
