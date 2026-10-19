@@ -9,7 +9,7 @@
 
 //! Based on tokio and fully asynchronous, the library allows to deal with all the API's uses cases :
 //! - simple requests with one-off answers, like `/system/identity/print`,
-//! - simple requests with array-like answers, like `/interfaces/print`,
+//! - simple requests with array-like answers, like `/interface/print`,
 //! - simple requests to listen to events, like `/user/active/listen`,
 //! - cancel streaming commands with `/cancel`
 //!
@@ -21,7 +21,7 @@
 
 //! Eight functions are then available:
 //! - `system_resources` will make a call to `/system/resource/print`
-//! - `interfaces` will retrieve a list of interfaces with all their properties (``/interfaces/print``)
+//! - `interfaces` will retrieve a list of interfaces with all their properties (``/interface/print``)
 //! - `active_users` returns a `Stream` of events regarding user activity (login & logout)
 //! - `interfaces_changes` (or `interface_changes`) returns a `Stream` of events regarding changes to interfaces (up, down, ...)
 //! - `cancel` cancels a streaming command given its tag

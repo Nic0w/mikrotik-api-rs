@@ -4,9 +4,9 @@ use human_bytes::human_bytes;
 use mikrotik_api::{Authenticated, MikrotikAPI, SystemResources};
 use serde::Deserialize;
 
-struct PrettyRessources(SystemResources);
+struct PrettyResources(SystemResources);
 
-impl Display for PrettyRessources {
+impl Display for PrettyResources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Uptime: {}", self.0.uptime)?;
         writeln!(f, "Version: {}", self.0.version)?;
@@ -35,16 +35,24 @@ struct Identity {
     pub name: String,
 }
 
-pub async fn identify(api: &mut MikrotikAPI<Authenticated>, ressources: bool) {
-    let identity = api
+pub async fn identify(api: &mut MikrotikAPI<Authenticated>, resources: bool) {
+    let identity = match api
         .generic_oneshot_call::<Identity>("/system/identity/print", None)
         .await
-        .unwrap();
+    {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Failed to fetch router identity: {}", e);
+            return;
+        }
+    };
 
     println!("Name: '{}'", identity.name);
 
-    if ressources {
-        let ressources = api.system_resources().await.unwrap();
-        println!("{}", PrettyRessources(ressources))
+    if resources {
+        match api.system_resources().await {
+            Ok(res) => println!("{}", PrettyResources(res)),
+            Err(e) => eprintln!("Failed to fetch system resources: {}", e),
+        }
     }
 }

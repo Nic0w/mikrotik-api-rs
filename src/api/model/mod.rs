@@ -30,7 +30,7 @@ pub enum Response<T> {
 }
 
 /// Possible values for !trap `category`.
-/// From https://wiki.mikrotik.com/wiki/Manual:API#category
+/// From <https://wiki.mikrotik.com/wiki/Manual:API#category>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TrapCategory {
@@ -65,9 +65,14 @@ impl<'de> Deserialize<'de> for TrapCategory {
         D: serde::Deserializer<'de>,
     {
         match u8::deserialize(deserializer)? {
-            //Safe because enum is repr(u8) and range is valid (from 0 to 7 inclusive)
-            category @ 0..=7 => unsafe { Ok(core::mem::transmute(category)) },
-
+            0 => Ok(TrapCategory::MissingItemOrCommand),
+            1 => Ok(TrapCategory::ArgumentValueFailure),
+            2 => Ok(TrapCategory::CommandExecutionInterrupted),
+            3 => Ok(TrapCategory::ScriptingFailure),
+            4 => Ok(TrapCategory::GeneralFailure),
+            5 => Ok(TrapCategory::APIFailure),
+            6 => Ok(TrapCategory::TTYFailure),
+            7 => Ok(TrapCategory::ReturnValue),
             unknown => Err(de::Error::invalid_value(
                 serde::de::Unexpected::Unsigned(unknown.into()),
                 &"a known trap category",
