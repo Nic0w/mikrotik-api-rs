@@ -19,7 +19,7 @@ pub struct Args {
 #[derive(clap::Subcommand, Debug)]
 pub enum Command {
     Identify {
-        #[clap(long, help = "show target's ressources as well.")]
+        #[clap(long, help = "show target's resources as well.")]
         full: bool,
     },
 

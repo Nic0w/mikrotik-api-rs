@@ -27,20 +27,22 @@ pub async fn custom_command(
     use CommandType::*;
     match cmd_type {
         OneOff => {
-            let map = api
+            match api
                 .generic_oneshot_call::<HashMap<String, String>>(command, attributes)
                 .await
-                .unwrap();
-
-            info!("Reply:\n{:#?}", map)
+            {
+                Ok(map) => info!("Reply:\n{:#?}", map),
+                Err(e) => eprintln!("Command failed: {}", e),
+            }
         }
         ArrayList => {
-            let map = api
+            match api
                 .generic_array_call::<HashMap<String, String>>(command, attributes)
                 .await
-                .unwrap();
-
-            info!("Received {} replies:\n{:#?}", map.len(), map)
+            {
+                Ok(map) => info!("Received {} replies:\n{:#?}", map.len(), map),
+                Err(e) => eprintln!("Command failed: {}", e),
+            }
         }
 
         Streaming => {
@@ -50,13 +52,18 @@ pub async fn custom_command(
                 .await;
 
             info!("Listening for events...");
-            tokio::spawn(stream.for_each(move |item| async {
-                if let Response::Reply(event) = item {
-                    info!("New event:\n{:#?}", event)
+            if let Err(e) = tokio::spawn(stream.for_each(move |item| async {
+                match item {
+                    Response::Reply(event) => info!("New event:\n{:#?}", event),
+                    Response::Trap { message, .. } => eprintln!("Error event: {}", message),
+                    Response::Fatal => eprintln!("Connection closed by router (Fatal)"),
+                    Response::Done => info!("Stream finished"),
                 }
             }))
             .await
-            .unwrap();
+            {
+                eprintln!("Event listener task failed: {}", e);
+            }
         }
     }
 }

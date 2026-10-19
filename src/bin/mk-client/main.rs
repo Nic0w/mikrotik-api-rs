@@ -13,23 +13,34 @@ mod identify;
 
 #[tokio::main]
 pub async fn main() {
-    simple_logger::init_with_level(log::Level::Info).unwrap();
+    let _ = simple_logger::init_with_level(log::Level::Info);
 
     let args = Args::parse();
 
-    let api = mikrotik_api::connect(args.address).await.unwrap();
+    let api = match mikrotik_api::connect(&args.address).await {
+        Ok(api) => api,
+        Err(e) => {
+            eprintln!("Failed to connect to {}: {}", args.address, e);
+            std::process::exit(1);
+        }
+    };
 
-    let password = args
-        .password
-        .unwrap_or_else(|| Password::new().with_prompt("Password").interact().unwrap());
+    let password = match args.password {
+        Some(p) => p,
+        None => match Password::new().with_prompt("Password").interact() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to read password: {}", e);
+                std::process::exit(1);
+            }
+        },
+    };
 
     let mut api = match api.authenticate(&args.login, &password).await {
         Ok(api) => api,
-
         Err(e) => {
-            println!("{:?}", e);
-
-            return;
+            eprintln!("Authentication failed: {}", e);
+            std::process::exit(1);
         }
     };
 
@@ -55,7 +66,7 @@ pub async fn main() {
                     let mut cmd = Args::command();
                     cmd.error(
                         clap::error::ErrorKind::ArgumentConflict,
-                        "Arguments are mutualy exculisve",
+                        "Arguments are mutually exclusive",
                     )
                     .exit();
                 }
@@ -71,7 +82,7 @@ pub async fn main() {
 
             info!("Listening for active users...");
 
-            tokio::spawn(stream.for_each(move |item| async {
+            if let Err(e) = tokio::spawn(stream.for_each(move |item| async {
                 if let Response::Reply(user) = item {
                     use mikrotik_api::ActiveUser::*;
                     match user {
@@ -92,7 +103,9 @@ pub async fn main() {
                 }
             }))
             .await
-            .unwrap();
+            {
+                eprintln!("Active users task failed: {}", e);
+            }
         }
     };
 }
