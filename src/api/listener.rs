@@ -144,9 +144,7 @@ pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap)
     }
 
     if let Ok(mut guarded_map) = tags.lock() {
-        for (_, mut caller) in guarded_map.drain() {
-            caller.disconnect();
-        }
+        guarded_map.close();
     }
 
     warn!("event_loop: exiting!");
