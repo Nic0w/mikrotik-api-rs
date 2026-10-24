@@ -336,6 +336,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_oneshot_empty_response_for_maps_and_optional_structs_on_bare_done() {
+        use std::collections::{BTreeMap, HashMap};
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct AllOptional {
+            #[serde(rename = ".id")]
+            id: Option<String>,
+            name: Option<String>,
+            #[serde(default)]
+            disabled: bool,
+        }
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct EmptyBraces {}
+
+        let bare_done = vec!["!done".to_string(), ".tag=1".to_string(), "".to_string()];
+
+        // 1. HashMap<String, String> on bare !done -> Response::Done -> Err(Error::EmptyResponse)
+        let map_call = OneShotCall::<HashMap<String, String>>::new();
+        let mut map_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(map_call.clone());
+        map_caller.done(bare_done.clone()).unwrap();
+        let map_res = map_call.await.expect("call failed");
+        assert_eq!(map_res, Response::Done);
+        let map_result: Result<HashMap<String, String>, crate::api::Error> = map_res.into();
+        assert!(matches!(map_result, Err(crate::api::Error::EmptyResponse)));
+
+        // 2. BTreeMap<String, String> on bare !done -> Response::Done -> Err(Error::EmptyResponse)
+        let btree_call = OneShotCall::<BTreeMap<String, String>>::new();
+        let mut btree_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(btree_call.clone());
+        btree_caller.done(bare_done.clone()).unwrap();
+        let btree_res = btree_call.await.expect("call failed");
+        assert_eq!(btree_res, Response::Done);
+        let btree_result: Result<BTreeMap<String, String>, crate::api::Error> = btree_res.into();
+        assert!(matches!(
+            btree_result,
+            Err(crate::api::Error::EmptyResponse)
+        ));
+
+        // 3. Struct with all Option / #[serde(default)] fields on bare !done -> Err(Error::EmptyResponse)
+        let opt_call = OneShotCall::<AllOptional>::new();
+        let mut opt_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(opt_call.clone());
+        opt_caller.done(bare_done.clone()).unwrap();
+        let opt_res = opt_call.await.expect("call failed");
+        assert_eq!(opt_res, Response::Done);
+        let opt_result: Result<AllOptional, crate::api::Error> = opt_res.into();
+        assert!(matches!(opt_result, Err(crate::api::Error::EmptyResponse)));
+
+        // 4. Empty braced struct on bare !done -> Err(Error::EmptyResponse)
+        let empty_call = OneShotCall::<EmptyBraces>::new();
+        let mut empty_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(empty_call.clone());
+        empty_caller.done(bare_done).unwrap();
+        let empty_res = empty_call.await.expect("call failed");
+        assert_eq!(empty_res, Response::Done);
+        let empty_result: Result<EmptyBraces, crate::api::Error> = empty_res.into();
+        assert!(matches!(
+            empty_result,
+            Err(crate::api::Error::EmptyResponse)
+        ));
+
+        // 5. Attributed !done (=ret=*1A) with HashMap<String, String> still succeeds with Reply
+        let ret_map_call = OneShotCall::<HashMap<String, String>>::new();
+        let mut ret_map_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(ret_map_call.clone());
+        ret_map_caller
+            .done(vec![
+                "!done".to_string(),
+                ".tag=2".to_string(),
+                "=ret=*1A".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+        let ret_map_res = ret_map_call.await.expect("call failed");
+        let ret_map: Result<HashMap<String, String>, crate::api::Error> = ret_map_res.into();
+        let map = ret_map.expect("expected attributed !done to succeed for HashMap");
+        assert_eq!(map.get("ret").map(String::as_str), Some("*1A"));
+    }
+
+    #[tokio::test]
     async fn test_oneshot_trap_overwrites_previous_re() {
         #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
         struct Item {

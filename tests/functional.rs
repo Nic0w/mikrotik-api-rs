@@ -1143,6 +1143,49 @@ async fn test_done_attributes_ret_and_unit_oneshot_live() {
         "expected Err(Error::EmptyResponse) for non-unit struct on bare !done, got {:?}",
         non_unit_res
     );
+
+    // 4. Query yielding 0 items with T = HashMap<String, String> returns Err(Error::EmptyResponse)
+    let map_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<std::collections::HashMap<String, String>>(
+            "/interface/print",
+            Some(&[("?name", "nonexistent-iface-xyz")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for nonexistent interface query with HashMap");
+
+    assert!(
+        matches!(map_res, Err(Error::EmptyResponse)),
+        "expected Err(Error::EmptyResponse) for HashMap on bare !done, got {:?}",
+        map_res
+    );
+
+    // 5. Query yielding 0 items with an all-optional struct returns Err(Error::EmptyResponse)
+    #[derive(Debug, Deserialize)]
+    struct OptionalInterface {
+        #[serde(rename = ".id")]
+        _id: Option<String>,
+        _name: Option<String>,
+        #[serde(default)]
+        _disabled: bool,
+    }
+
+    let opt_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<OptionalInterface>(
+            "/interface/print",
+            Some(&[("?name", "nonexistent-iface-xyz")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for nonexistent interface query with OptionalInterface");
+
+    assert!(
+        matches!(opt_res, Err(Error::EmptyResponse)),
+        "expected Err(Error::EmptyResponse) for all-optional struct on bare !done, got {:?}",
+        opt_res
+    );
 }
 
 #[tokio::test]
