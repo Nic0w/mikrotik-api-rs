@@ -23,20 +23,35 @@ pub fn deserialize_sentence<T: de::DeserializeOwned>(sentence: &[String]) -> Res
     <Response<T>>::deserialize(&mut deserializer)
 }
 
+/// Returns `true` if a `!done` sentence contains any data attribute words
+/// (excluding the leading `!done` control word, `.tag` words, and empty terminator `""`).
+pub fn has_done_attributes(sentence: &[String]) -> bool {
+    let words = match sentence.first().map(String::as_str) {
+        Some("!done") => &sentence[1..],
+        _ => sentence,
+    };
+
+    words
+        .iter()
+        .any(|w| !w.is_empty() && !w.starts_with(".tag"))
+}
+
 /// Deserializes a payload from a `!done` sentence.
 ///
 /// RouterOS commands like `add` or `count-only` queries return data attributes (e.g. `=ret=...`)
 /// directly inside the `!done` sentence without an accompanying `!re` frame.
 /// In addition, commands that return a bare `!done` sentence can be deserialized into unit `()`.
 pub fn deserialize_done_payload<T: de::DeserializeOwned>(sentence: &[String]) -> Result<T> {
-    let mut iterator = sentence.iter();
+    let words = match sentence.first().map(String::as_str) {
+        Some("!done") => &sentence[1..],
+        _ => sentence,
+    };
 
-    if matches!(
-        iterator.as_slice().first().map(String::as_str),
-        Some("!done")
-    ) {
-        iterator.next();
-    }
+    let mut iterator = if has_done_attributes(sentence) {
+        words.iter()
+    } else {
+        [].iter()
+    };
 
     let mut deserializer = SentenceDeserializer::new(&mut iterator);
 
@@ -328,6 +343,14 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.current_word.is_none()
+            && self.current_key.is_none()
+            && self.current_value.is_none()
+            && self.cursor.as_slice().is_empty()
+        {
+            return Err(DeserializerError::MissingWord);
+        }
+
         visitor.visit_some(self)
     }
 
@@ -1090,5 +1113,77 @@ mod tests {
         let res: Response<()> = deserialize_sentence(&fatal_with_msg)
             .expect("failed to deserialize fatal with message");
         assert!(matches!(res, Response::Fatal));
+    }
+
+    #[test]
+    fn test_deserialize_done_payload_bare_vs_attributed() {
+        use super::{deserialize_done_payload, DeserializerError};
+        use std::collections::BTreeMap;
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct UnitMarker;
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct AllOptional {
+            #[serde(rename = ".id")]
+            id: Option<String>,
+            name: Option<String>,
+            #[serde(default)]
+            disabled: bool,
+        }
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct EmptyStruct {}
+
+        let bare_done = vec!["!done".to_string(), ".tag=1".to_string(), "".to_string()];
+
+        // 1. Unit () and unit struct succeed on bare !done
+        assert_eq!(deserialize_done_payload::<()>(&bare_done).unwrap(), ());
+        assert_eq!(
+            deserialize_done_payload::<UnitMarker>(&bare_done).unwrap(),
+            UnitMarker
+        );
+
+        // 2. Maps, all-optional structs, empty structs, and Option fail on bare !done
+        assert!(matches!(
+            deserialize_done_payload::<HashMap<String, String>>(&bare_done),
+            Err(DeserializerError::MissingWord)
+        ));
+        assert!(matches!(
+            deserialize_done_payload::<BTreeMap<String, String>>(&bare_done),
+            Err(DeserializerError::MissingWord)
+        ));
+        assert!(matches!(
+            deserialize_done_payload::<AllOptional>(&bare_done),
+            Err(DeserializerError::MissingWord)
+        ));
+        assert!(matches!(
+            deserialize_done_payload::<EmptyStruct>(&bare_done),
+            Err(DeserializerError::MissingWord)
+        ));
+        assert!(matches!(
+            deserialize_done_payload::<Option<()>>(&bare_done),
+            Err(DeserializerError::MissingWord)
+        ));
+        assert!(matches!(
+            deserialize_done_payload::<Option<AllOptional>>(&bare_done),
+            Err(DeserializerError::MissingWord)
+        ));
+
+        // 3. Attributed !done succeeds for maps, structs, and unit
+        let attributed_done = vec![
+            "!done".to_string(),
+            ".tag=1".to_string(),
+            "=ret=*1A".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            deserialize_done_payload::<()>(&attributed_done).unwrap(),
+            ()
+        );
+        let map = deserialize_done_payload::<HashMap<String, String>>(&attributed_done)
+            .expect("expected attributed !done to deserialize into HashMap");
+        assert_eq!(map.get("ret").map(String::as_str), Some("*1A"));
     }
 }

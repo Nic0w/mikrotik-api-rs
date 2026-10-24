@@ -9,7 +9,7 @@ use std::{
 use serde::de::DeserializeOwned;
 
 use crate::api::{
-    de::{deserialize_done_payload, deserialize_sentence, DeserializerError},
+    de::{deserialize_done_payload, deserialize_sentence, has_done_attributes, DeserializerError},
     Response,
 };
 
@@ -68,10 +68,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
             let mut bad_sentence_err = None;
 
             if call.inner.is_none() {
-                let has_attributes = sentence
-                    .iter()
-                    .skip(1)
-                    .any(|w| !w.is_empty() && !w.starts_with(".tag="));
+                let has_attributes = has_done_attributes(sentence.as_slice());
 
                 match deserialize_done_payload::<T>(sentence.as_slice()) {
                     Ok(value) => {
