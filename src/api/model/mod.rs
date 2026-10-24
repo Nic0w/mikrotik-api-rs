@@ -8,7 +8,7 @@ use serde::{
 use super::error::Error;
 
 /// A response to a command, sent by the router.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 pub enum Response<T> {
     /// `!done` sentence, indicating end of reply or stream
     Done,

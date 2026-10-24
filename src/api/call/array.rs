@@ -41,6 +41,10 @@ impl<T: DeserializeOwned + Debug> AsyncCall for ArrayListCall<T> {
 
         if let Ok(mut call) = self.0.lock() {
             match (&mut call.inner, res) {
+                (Some(Err(_)), Ok(trap @ Response::Trap { .. })) => {
+                    call.inner = Some(Ok(vec![trap]));
+                    return Ok(());
+                }
                 (Some(Ok(vec)), Ok(value)) => {
                     vec.push(value);
                     return Ok(());
@@ -61,7 +65,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for ArrayListCall<T> {
         Err(CallError::BadLock)
     }
 
-    fn done(&mut self) -> Result<(), CallError> {
+    fn done(&mut self, _sentence: Vec<String>) -> Result<(), CallError> {
         if let Ok(mut call) = self.0.lock() {
             call.done()?;
 

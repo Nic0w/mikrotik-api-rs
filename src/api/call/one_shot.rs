@@ -9,7 +9,7 @@ use std::{
 use serde::de::DeserializeOwned;
 
 use crate::api::{
-    de::{deserialize_sentence, DeserializerError},
+    de::{deserialize_done_payload, deserialize_sentence, DeserializerError},
     Response,
 };
 
@@ -39,6 +39,12 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
 
         if let Ok(mut call) = self.0.lock() {
             match res {
+                Ok(value @ Response::Trap { .. }) => {
+                    if !matches!(call.inner, Some(Ok(Response::Trap { .. }))) {
+                        call.inner = Some(Ok(value));
+                    }
+                    return Ok(());
+                }
                 Ok(value) => {
                     if call.inner.is_none() {
                         let _ = call.inner.insert(Ok(value));
@@ -57,12 +63,35 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
         Err(CallError::BadLock)
     }
 
-    fn done(&mut self) -> Result<(), CallError> {
+    fn done(&mut self, sentence: Vec<String>) -> Result<(), CallError> {
         if let Ok(mut call) = self.0.lock() {
+            let mut bad_sentence_err = None;
+
             if call.inner.is_none() {
-                call.inner = Some(Ok(Response::Done));
+                let has_attributes = sentence
+                    .iter()
+                    .skip(1)
+                    .any(|w| !w.is_empty() && !w.starts_with(".tag="));
+
+                match deserialize_done_payload::<T>(sentence.as_slice()) {
+                    Ok(value) => {
+                        call.inner = Some(Ok(Response::Reply(value)));
+                    }
+                    Err(e) if has_attributes => {
+                        call.inner = Some(Err(e.clone()));
+                        bad_sentence_err = Some(e);
+                    }
+                    Err(_) => {
+                        call.inner = Some(Ok(Response::Done));
+                    }
+                }
             }
+
             call.done()?;
+
+            if let Some(e) = bad_sentence_err {
+                return Err(CallError::BadSentence(e));
+            }
 
             return Ok(());
         }
