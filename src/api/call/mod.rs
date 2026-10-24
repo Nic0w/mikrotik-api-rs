@@ -37,7 +37,7 @@ impl From<DeserializerError> for CallError {
 pub trait AsyncCall {
     fn push_reply(&mut self, sentence: Vec<String>) -> Result<(), CallError>;
 
-    fn done(&mut self) -> Result<(), CallError>;
+    fn done(&mut self, sentence: Vec<String>) -> Result<(), CallError>;
 
     fn disconnect(&mut self);
 }
@@ -89,6 +89,7 @@ impl<T: Debug> InnerCall<T> {
 mod tests {
     use super::*;
     use crate::api::Response;
+    use crate::TrapCategory;
     use std::{
         future::Future,
         pin::Pin,
@@ -131,14 +132,14 @@ mod tests {
         assert!(matches!(Pin::new(&mut call).poll(&mut cx), Poll::Pending));
         assert_eq!(wake_count.load(Ordering::SeqCst), 0);
 
-        // Trigger done() without prior !re reply -> defaults to Response::Done and wakes once
-        call.done().unwrap();
+        // Trigger done() without prior !re reply -> for () resolves to Response::Reply(()) and wakes once
+        call.done(vec!["!done".to_string()]).unwrap();
         assert_eq!(wake_count.load(Ordering::SeqCst), 1);
 
-        // Next poll returns Ready(Response::Done)
+        // Next poll returns Ready(Response::Reply(()))
         assert!(matches!(
             Pin::new(&mut call).poll(&mut cx),
-            Poll::Ready(Ok(Response::Done))
+            Poll::Ready(Ok(Response::Reply(())))
         ));
     }
 
@@ -159,7 +160,7 @@ mod tests {
         assert_eq!(wake_count.load(Ordering::SeqCst), 0);
 
         // Trigger done() -> wakes the registered waker exactly once
-        call.done().unwrap();
+        call.done(vec!["!done".to_string()]).unwrap();
         assert_eq!(wake_count.load(Ordering::SeqCst), 1);
 
         // Next poll returns Ready with the 1 !re item
@@ -189,20 +190,20 @@ mod tests {
             Poll::Pending
         ));
 
-        call.done().unwrap();
+        call.done(vec!["!done".to_string()]).unwrap();
 
         assert_eq!(count1.load(Ordering::SeqCst), 0);
         assert_eq!(count2.load(Ordering::SeqCst), 1);
 
         // 2. Calling done() before the first poll resolves immediately on first poll
         let mut fast_call = OneShotCall::<()>::new();
-        fast_call.done().unwrap();
+        fast_call.done(vec!["!done".to_string()]).unwrap();
 
         let count3 = Arc::new(AtomicUsize::new(0));
         let waker3 = counting_waker(count3.clone());
         assert!(matches!(
             Pin::new(&mut fast_call).poll(&mut Context::from_waker(&waker3)),
-            Poll::Ready(Ok(Response::Done))
+            Poll::Ready(Ok(Response::Reply(())))
         ));
         assert_eq!(count3.load(Ordering::SeqCst), 0);
     }
@@ -214,7 +215,7 @@ mod tests {
 
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            one_shot_producer.done().unwrap();
+            one_shot_producer.done(vec!["!done".to_string()]).unwrap();
         });
 
         let mut polls = 0usize;
@@ -225,10 +226,161 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(res, Ok(Response::Done)));
+        assert!(matches!(res, Ok(Response::Reply(()))));
         assert_eq!(
             polls, 2,
             "expected exactly 2 polls across 25ms wait, got {polls}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_unit_type_succeeds_on_bare_done() {
+        let call = OneShotCall::<()>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        caller
+            .done(vec![
+                "!done".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        let res = call.await.expect("deserialization failed");
+        assert_eq!(res, Response::Reply(()));
+        let result: Result<(), crate::api::Error> = res.into();
+        assert_eq!(result.unwrap(), ());
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_done_with_ret_attribute_deserializes_struct() {
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct CreatedItem {
+            ret: String,
+        }
+
+        let call = OneShotCall::<CreatedItem>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        caller
+            .done(vec![
+                "!done".to_string(),
+                ".tag=1".to_string(),
+                "=ret=*1A".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        let res = call.await.expect("deserialization failed");
+        assert_eq!(
+            res,
+            Response::Reply(CreatedItem {
+                ret: "*1A".to_string()
+            })
+        );
+        let result: Result<CreatedItem, crate::api::Error> = res.into();
+        assert_eq!(
+            result.unwrap(),
+            CreatedItem {
+                ret: "*1A".to_string()
+            }
+        );
+
+        // Also test that invalid attribute payload on !done returns CallError::BadSentence and DeserializerError
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct BadRet {
+            ret: u32,
+        }
+
+        let bad_call = OneShotCall::<BadRet>::new();
+        let mut bad_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(bad_call.clone());
+
+        let done_res = bad_caller.done(vec![
+            "!done".to_string(),
+            ".tag=2".to_string(),
+            "=ret=*1A".to_string(), // non-integer string fails to parse into u32
+            "".to_string(),
+        ]);
+
+        assert!(matches!(done_res, Err(CallError::BadSentence(_))));
+        let bad_res = bad_call.await;
+        assert!(bad_res.is_err());
+        let err: crate::api::Error = bad_res.unwrap_err().into();
+        assert!(matches!(err, crate::api::Error::Deserialize(_)));
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_empty_response_for_non_unit_struct_on_bare_done() {
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Dummy {
+            name: String,
+        }
+
+        let call = OneShotCall::<Dummy>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        // Bare !done without data attributes
+        caller
+            .done(vec![
+                "!done".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        let res = call.await.expect("call failed");
+        assert_eq!(res, Response::Done);
+        let result: Result<Dummy, crate::api::Error> = res.into();
+        assert!(matches!(result, Err(crate::api::Error::EmptyResponse)));
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_trap_overwrites_previous_re() {
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            name: String,
+        }
+
+        let call = OneShotCall::<Item>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        // 1. Push a valid !re sentence
+        caller
+            .push_reply(vec![
+                "!re".to_string(),
+                "=name=foo".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        // 2. Push a !trap sentence
+        caller
+            .push_reply(vec![
+                "!trap".to_string(),
+                "=category=4".to_string(),
+                "=message=interrupted".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        // 3. Complete with !done
+        caller
+            .done(vec![
+                "!done".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        let res = call.await.expect("call failed");
+        match res {
+            Response::Trap { category, message } => {
+                assert_eq!(category, Some(TrapCategory::GeneralFailure));
+                assert_eq!(message, "interrupted");
+            }
+            other => panic!("expected Response::Trap, got {:?}", other),
+        }
     }
 }

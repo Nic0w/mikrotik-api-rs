@@ -23,6 +23,26 @@ pub fn deserialize_sentence<T: de::DeserializeOwned>(sentence: &[String]) -> Res
     <Response<T>>::deserialize(&mut deserializer)
 }
 
+/// Deserializes a payload from a `!done` sentence.
+///
+/// RouterOS commands like `add` or `count-only` queries return data attributes (e.g. `=ret=...`)
+/// directly inside the `!done` sentence without an accompanying `!re` frame.
+/// In addition, commands that return a bare `!done` sentence can be deserialized into unit `()`.
+pub fn deserialize_done_payload<T: de::DeserializeOwned>(sentence: &[String]) -> Result<T> {
+    let mut iterator = sentence.iter();
+
+    if matches!(
+        iterator.as_slice().first().map(String::as_str),
+        Some("!done")
+    ) {
+        iterator.next();
+    }
+
+    let mut deserializer = SentenceDeserializer::new(&mut iterator);
+
+    T::deserialize(&mut deserializer)
+}
+
 pub struct SentenceDeserializer<'de> {
     cursor: &'de mut Iter<'de, String>,
 

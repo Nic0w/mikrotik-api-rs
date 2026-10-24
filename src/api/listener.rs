@@ -121,9 +121,19 @@ pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap)
                         }
                         FrameType::Done => {
                             if let Some(mut caller) = guarded_map.remove(&id) {
-                                if let Err(e) = caller.done() {
-                                    error!("on done: {:?}", e);
-                                    break;
+                                if let Err(e) = caller.done(sentence) {
+                                    match e {
+                                        CallError::BadSentence(de_err) => {
+                                            warn!(
+                                                "on done (tag {}): deserialization error: {}",
+                                                id, de_err
+                                            );
+                                        }
+                                        other => {
+                                            error!("on done: {:?}", other);
+                                            break;
+                                        }
+                                    }
                                 }
                             } else {
                                 trace!("done: no active caller for tag {}", id);
@@ -157,6 +167,7 @@ mod tests {
         call::{ArrayListCall, OneShotCall, StreamingCall},
         encode_sentence, Response, TagMap,
     };
+    use crate::TrapCategory;
     use futures::StreamExt;
     use std::{
         io,
@@ -445,7 +456,7 @@ mod tests {
             .await
             .expect("OneShotCall timed out after untagged and tagged !done")
             .unwrap();
-        assert!(matches!(res, Response::Done));
+        assert!(matches!(res, Response::Reply(())));
         assert!(shared_map.lock().unwrap().is_empty());
     }
 
@@ -506,7 +517,7 @@ mod tests {
             .await
             .expect("OneShotCall timed out")
             .unwrap();
-        assert!(matches!(oneshot_res, Response::Done));
+        assert!(matches!(oneshot_res, Response::Reply(())));
         assert!(shared_map.lock().unwrap().is_empty());
     }
 
@@ -549,7 +560,7 @@ mod tests {
             .await
             .expect("OneShotCall timed out after malformed tags")
             .unwrap();
-        assert!(matches!(res, Response::Done));
+        assert!(matches!(res, Response::Reply(())));
         assert!(shared_map.lock().unwrap().is_empty());
     }
 
@@ -643,7 +654,7 @@ mod tests {
             .await
             .expect("OneShotCall timed out after unknown/empty frames")
             .unwrap();
-        assert!(matches!(res, Response::Done));
+        assert!(matches!(res, Response::Reply(())));
         assert!(shared_map.lock().unwrap().is_empty());
     }
 
@@ -780,6 +791,134 @@ mod tests {
             }
             other => panic!("expected Response::Reply, got {:?}", other),
         }
+
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_listener_oneshot_unit_done_and_ret_and_trap_after_re() {
+        let (mut client_write, server_read) = tokio::io::duplex(1024);
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct RetItem {
+            ret: String,
+        }
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            name: String,
+        }
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct BadRet {
+            ret: u32,
+        }
+
+        let tag1_unit = OneShotCall::<()>::new();
+        let tag2_ret = OneShotCall::<RetItem>::new();
+        let tag3_trap = OneShotCall::<Item>::new();
+        let tag4_bad_ret = OneShotCall::<BadRet>::new();
+        let tag5_subsequent = OneShotCall::<()>::new();
+
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(tag1_unit.clone()));
+        map.insert(2, Box::new(tag2_ret.clone()));
+        map.insert(3, Box::new(tag3_trap.clone()));
+        map.insert(4, Box::new(tag4_bad_ret.clone()));
+        map.insert(5, Box::new(tag5_subsequent.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // Tag 1: bare !done -> resolves to Response::Reply(())
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=1"]))
+            .await
+            .unwrap();
+
+        // Tag 2: !done with =ret=*1A -> resolves to Response::Reply(RetItem { ret: "*1A" })
+        client_write
+            .write_all(&encode_sentence(&["!done", "=ret=*1A", ".tag=2"]))
+            .await
+            .unwrap();
+
+        // Tag 3: !re followed by !trap followed by !done -> Trap takes precedence over Reply
+        client_write
+            .write_all(&encode_sentence(&["!re", "=name=my-interface", ".tag=3"]))
+            .await
+            .unwrap();
+        client_write
+            .write_all(&encode_sentence(&[
+                "!trap",
+                "=category=4",
+                "=message=interrupted",
+                ".tag=3",
+            ]))
+            .await
+            .unwrap();
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=3"]))
+            .await
+            .unwrap();
+
+        // Tag 4: !done with invalid attribute payload (=ret=*1A cannot parse into u32)
+        // Must fail deserialization without breaking the event loop
+        client_write
+            .write_all(&encode_sentence(&["!done", "=ret=*1A", ".tag=4"]))
+            .await
+            .unwrap();
+
+        // Tag 5: subsequent bare !done to prove event loop is still running
+        client_write
+            .write_all(&encode_sentence(&["!done", ".tag=5"]))
+            .await
+            .unwrap();
+
+        // Assert Tag 1
+        let res1 = timeout(Duration::from_secs(1), tag1_unit)
+            .await
+            .expect("Tag 1 timed out")
+            .expect("Tag 1 failed unexpectedly");
+        assert_eq!(res1, Response::Reply(()));
+
+        // Assert Tag 2
+        let res2 = timeout(Duration::from_secs(1), tag2_ret)
+            .await
+            .expect("Tag 2 timed out")
+            .expect("Tag 2 failed unexpectedly");
+        assert_eq!(res2, Response::Reply(RetItem { ret: "*1A".into() }));
+
+        // Assert Tag 3
+        let res3 = timeout(Duration::from_secs(1), tag3_trap)
+            .await
+            .expect("Tag 3 timed out")
+            .expect("Tag 3 failed unexpectedly");
+        match res3 {
+            Response::Trap { category, message } => {
+                assert_eq!(category, Some(TrapCategory::GeneralFailure));
+                assert_eq!(message, "interrupted");
+            }
+            other => panic!("expected Response::Trap, got {:?}", other),
+        }
+
+        // Assert Tag 4
+        let res4 = timeout(Duration::from_secs(1), tag4_bad_ret)
+            .await
+            .expect("Tag 4 timed out");
+        assert!(
+            res4.is_err(),
+            "expected Tag 4 to return DeserializerError, got {:?}",
+            res4
+        );
+        let err4: Error = res4.unwrap_err().into();
+        assert!(matches!(err4, Error::Deserialize(_)));
+
+        // Assert Tag 5
+        let res5 = timeout(Duration::from_secs(1), tag5_subsequent)
+            .await
+            .expect("Tag 5 timed out")
+            .expect("Tag 5 failed unexpectedly");
+        assert_eq!(res5, Response::Reply(()));
 
         assert!(shared_map.lock().unwrap().is_empty());
     }

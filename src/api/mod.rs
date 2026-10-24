@@ -368,7 +368,11 @@ impl MikrotikAPI<Authenticated> {
             )
             .await
         {
-            Ok(call) => call.await.unwrap_or(Response::Fatal),
+            Ok(call) => match call.await {
+                Ok(Response::Reply(())) | Ok(Response::Done) => Response::Done,
+                Ok(other) => other,
+                Err(_) => Response::Fatal,
+            },
             Err(_) => Response::Fatal,
         }
     }

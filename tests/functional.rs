@@ -1042,3 +1042,58 @@ async fn test_calls_after_quit_do_not_panic_or_hang() {
         "expected cancel to return Response::Fatal after /quit"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_done_attributes_ret_and_unit_oneshot_live() {
+    let mut api = connect_and_login().await;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct RetCount {
+        ret: u32,
+    }
+
+    // 1. =count-only= returns !done with =ret=<N> attribute and no !re frame
+    let count_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<RetCount>("/interface/print", Some(&[("count-only", "")])),
+    )
+    .await
+    .expect("timed out waiting for /interface/print =count-only=")
+    .expect("expected count-only to succeed and deserialize RetCount");
+
+    assert!(
+        count_res.ret > 0,
+        "expected interface count > 0, got {}",
+        count_res.ret
+    );
+
+    // 2. Query yielding 0 items with T = () returns Ok(())
+    let () = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<()>(
+            "/interface/print",
+            Some(&[("?name", "nonexistent-iface-xyz")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for nonexistent interface query")
+    .expect("expected generic_oneshot_call::<()> to succeed on bare !done");
+
+    // 3. Query yielding 0 items with T = Identity returns Err(Error::EmptyResponse)
+    let non_unit_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>(
+            "/interface/print",
+            Some(&[("?name", "nonexistent-iface-xyz")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for nonexistent interface query");
+
+    assert!(
+        matches!(non_unit_res, Err(Error::EmptyResponse)),
+        "expected Err(Error::EmptyResponse) for non-unit struct on bare !done, got {:?}",
+        non_unit_res
+    );
+}

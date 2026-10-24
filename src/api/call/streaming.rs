@@ -60,7 +60,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
         Err(CallError::BadLock)
     }
 
-    fn done(&mut self) -> Result<(), CallError> {
+    fn done(&mut self, _sentence: Vec<String>) -> Result<(), CallError> {
         if let Ok(mut call) = self.inner.lock() {
             call.done()?;
             let _ = call.sender.send(Response::Done);
