@@ -1,6 +1,6 @@
 use std::{env, time::Duration};
 
-use mikrotik_api::{Authenticated, MikrotikAPI};
+use mikrotik_api::{Authenticated, Error, MikrotikAPI};
 use serde::Deserialize;
 use tokio::time::timeout;
 
@@ -905,4 +905,65 @@ async fn test_field_enums_signed_ints_and_newtypes_live() {
                 | LiveInterfaceType::Other
         ));
     }
+}
+
+/// Verifies that calling `generic_oneshot_call` and `generic_array_call` with a mismatched struct
+/// returns `Err(Error::Deserialize(_))` (and NOT `Err(Error::EndOfStream)`), and subsequent calls
+/// on the same `MikrotikAPI` instance continue to succeed (Issue #25).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_deserialization_failure_returns_deserialize_error_and_preserves_connection() {
+    let mut api = connect_and_login().await;
+
+    #[derive(Debug, Deserialize)]
+    struct MismatchedStruct {
+        #[allow(dead_code)]
+        non_existent_required_field: u64,
+    }
+
+    // 1. generic_oneshot_call with mismatched struct fails deserialization
+    let oneshot_err = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<MismatchedStruct>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out waiting for generic_oneshot_call")
+    .expect_err("expected generic_oneshot_call to fail with deserialization error");
+
+    assert!(
+        matches!(oneshot_err, Error::Deserialize(_)),
+        "expected Error::Deserialize, got {:?}",
+        oneshot_err
+    );
+
+    // 2. generic_array_call with mismatched struct fails deserialization
+    let array_err = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<MismatchedStruct>("/interface/print", None),
+    )
+    .await
+    .expect("timed out waiting for generic_array_call")
+    .expect_err("expected generic_array_call to fail with deserialization error");
+
+    assert!(
+        matches!(array_err, Error::Deserialize(_)),
+        "expected Error::Deserialize, got {:?}",
+        array_err
+    );
+
+    // 3. Immediately verify the connection is STILL valid and functional on the same `api` instance
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out fetching identity after deserialization failure")
+    .expect("failed to fetch identity on preserved connection");
+    assert!(!identity.name.trim().is_empty());
+
+    let resources = timeout(Duration::from_secs(5), api.system_resources())
+        .await
+        .expect("timed out fetching system resources after deserialization failure")
+        .expect("failed to fetch system resources on preserved connection");
+    assert!(!resources.board_name.is_empty());
 }

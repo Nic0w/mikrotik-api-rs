@@ -1,7 +1,7 @@
-use std::{borrow::Cow, fmt::Display};
+use std::{borrow::Cow, fmt::Display, sync::Arc};
 
 /// Errors occurring during sentence deserialization into Rust data types.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DeserializerError {
     /// Missing word required to complete the sentence.
     MissingWord,
@@ -10,7 +10,7 @@ pub enum DeserializerError {
     /// Failed to parse value from the current word.
     MissingValue,
     /// Value could not be parsed into the expected primitive type.
-    BadPrimitiveValue(Box<dyn std::error::Error>),
+    BadPrimitiveValue(Arc<dyn std::error::Error + Send + Sync>),
     /// Custom deserializer error message.
     Custom(Cow<'static, str>),
 }

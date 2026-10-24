@@ -1,4 +1,4 @@
-use std::{slice::Iter, str::FromStr};
+use std::{slice::Iter, str::FromStr, sync::Arc};
 
 use serde::{
     de::{self, EnumAccess, IntoDeserializer, MapAccess, VariantAccess, Visitor},
@@ -84,13 +84,12 @@ impl<'de> SentenceDeserializer<'de> {
     fn parse_primitive<T>(&mut self) -> Result<T>
     where
         T: FromStr,
-        T::Err: std::error::Error + 'static,
+        T::Err: std::error::Error + Send + Sync + 'static,
     {
         let text = self.word_part()?;
 
-        text.parse().map_err(|e| {
-            DeserializerError::BadPrimitiveValue(Box::<dyn std::error::Error>::from(e))
-        })
+        text.parse()
+            .map_err(|e| DeserializerError::BadPrimitiveValue(Arc::new(e)))
     }
 }
 
@@ -326,9 +325,9 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
         match self.word_part()? {
             "true" | "yes" => visitor.visit_bool(true),
             "false" | "no" => visitor.visit_bool(false),
-            e => Err(DeserializerError::BadPrimitiveValue(Box::<
-                dyn std::error::Error,
-            >::from(e))),
+            e => Err(DeserializerError::BadPrimitiveValue(
+                Box::<dyn std::error::Error + Send + Sync>::from(e).into(),
+            )),
         }
     }
 }

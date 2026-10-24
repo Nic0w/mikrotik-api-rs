@@ -177,7 +177,7 @@ impl MikrotikAPI<Disconnected> {
             .await;
 
         use Response::*;
-        match success.await {
+        match success.await? {
             Done | Reply(_) => Ok(MikrotikAPI {
                 output: self.output,
                 tag_map: self.tag_map,
@@ -202,7 +202,7 @@ impl MikrotikAPI<Authenticated> {
             None,
         )
         .await
-        .await
+        .await?
         .into()
     }
 
@@ -210,7 +210,7 @@ impl MikrotikAPI<Authenticated> {
     pub async fn interfaces(&mut self) -> Result<Vec<Interface>, Error> {
         self.do_call("/interface/print", None, ArrayListCall::new(), None)
             .await
-            .await
+            .await?
             .into_iter()
             .collect::<Response<Vec<Interface>>>()
             .into()
@@ -253,7 +253,7 @@ impl MikrotikAPI<Authenticated> {
     {
         self.do_call(command, attributes, OneShotCall::<T>::new(), None)
             .await
-            .await
+            .await?
             .into()
     }
 
@@ -268,7 +268,7 @@ impl MikrotikAPI<Authenticated> {
     {
         self.do_call(command, attributes, ArrayListCall::new(), None)
             .await
-            .await
+            .await?
             .into_iter()
             .collect::<Response<Vec<T>>>()
             .into()
@@ -300,6 +300,7 @@ impl MikrotikAPI<Authenticated> {
         )
         .await
         .await
+        .unwrap_or(Response::Fatal)
     }
 }
 

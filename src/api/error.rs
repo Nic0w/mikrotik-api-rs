@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 use std::io;
 
+use super::de::DeserializerError;
+
 /// Top-level error enum representing errors that can occur while communicating with RouterOS.
 #[derive(Debug)]
 pub enum Error {
@@ -16,11 +18,19 @@ pub enum Error {
     Io(io::Error),
     /// Invalid length prefix byte encountered on the wire.
     InvalidWordLength(u8),
+    /// Failed to deserialize a router sentence into the target Rust type.
+    Deserialize(DeserializerError),
 }
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         Error::Io(e)
+    }
+}
+
+impl From<DeserializerError> for Error {
+    fn from(e: DeserializerError) -> Self {
+        Error::Deserialize(e)
     }
 }
 
@@ -39,6 +49,8 @@ impl std::fmt::Display for Error {
             Io(e) => std::fmt::Display::fmt(&e, f),
 
             InvalidWordLength(b) => write!(f, "invalid word length prefix byte: {:#04x}", b),
+
+            Deserialize(e) => write!(f, "deserialization error: {}", e),
         }
     }
 }
