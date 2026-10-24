@@ -967,3 +967,78 @@ async fn test_deserialization_failure_returns_deserialize_error_and_preserves_co
         .expect("failed to fetch system resources on preserved connection");
     assert!(!resources.board_name.is_empty());
 }
+
+/// Verifies that after sending `/quit` (causing the router to terminate the session and close TCP),
+/// subsequent calls (`system_resources`, `interfaces`, `generic_oneshot_call`, `generic_streaming_call`,
+/// and `cancel`) do NOT panic or hang forever, but cleanly return errors or terminate (Issue #26).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_calls_after_quit_do_not_panic_or_hang() {
+    use futures::StreamExt;
+    use mikrotik_api::Response;
+
+    let mut api = connect_and_login().await;
+
+    // Send `/quit` to close the API session on the router side
+    let _ = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/quit", None),
+    )
+    .await;
+
+    // Give a brief moment for the router to close the socket and event_loop to exit
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 1. system_resources must not panic or hang
+    let sys_res = timeout(Duration::from_secs(3), api.system_resources()).await;
+    assert!(sys_res.is_ok(), "system_resources hung after /quit");
+    assert!(
+        sys_res.unwrap().is_err(),
+        "expected system_resources to return an error after /quit"
+    );
+
+    // 2. interfaces must not panic or hang
+    let ifaces_res = timeout(Duration::from_secs(3), api.interfaces()).await;
+    assert!(ifaces_res.is_ok(), "interfaces hung after /quit");
+    assert!(
+        ifaces_res.unwrap().is_err(),
+        "expected interfaces to return an error after /quit"
+    );
+
+    // 3. generic_oneshot_call must not panic or hang
+    let oneshot_res = timeout(
+        Duration::from_secs(3),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await;
+    assert!(oneshot_res.is_ok(), "generic_oneshot_call hung after /quit");
+    assert!(
+        oneshot_res.unwrap().is_err(),
+        "expected generic_oneshot_call to return an error after /quit"
+    );
+
+    // 4. generic_streaming_call must not panic or hang, stream yields None promptly
+    let mut tag = 1234;
+    let mut stream = timeout(
+        Duration::from_secs(3),
+        api.generic_streaming_call::<Identity>("/interface/listen", None, &mut tag),
+    )
+    .await
+    .expect("generic_streaming_call hung after /quit");
+    assert_eq!(tag, 0);
+
+    let next_event = timeout(Duration::from_secs(3), stream.next()).await;
+    assert!(next_event.is_ok(), "stream.next() hung after /quit");
+    assert!(
+        next_event.unwrap().is_none(),
+        "expected stream to yield None after /quit"
+    );
+
+    // 5. cancel must not panic or hang, returning Response::Fatal
+    let cancel_res = timeout(Duration::from_secs(3), api.cancel(tag)).await;
+    assert!(cancel_res.is_ok(), "cancel hung after /quit");
+    assert!(
+        matches!(cancel_res.unwrap(), Response::Fatal),
+        "expected cancel to return Response::Fatal after /quit"
+    );
+}
