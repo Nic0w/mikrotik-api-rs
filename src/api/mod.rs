@@ -153,8 +153,8 @@ impl<S: State> MikrotikAPI<S> {
     {
         let mut attributes: Vec<(&str, &str)> = attributes.map(<[_]>::to_vec).unwrap_or_default();
 
-        let boxed_call = Box::new(call_type);
-        let mut cloned_call = boxed_call.clone();
+        let boxed_call = Box::new(call_type.clone());
+        let mut caller_call = Box::new(call_type);
 
         let new_tag = {
             let mut map = self
@@ -163,7 +163,7 @@ impl<S: State> MikrotikAPI<S> {
                 .map_err(|_| std::io::Error::other("tag_map mutex poisoned"))?;
 
             if map.is_closed() {
-                cloned_call.disconnect();
+                caller_call.disconnect();
                 return Err(Error::EndOfStream);
             }
 
@@ -187,11 +187,11 @@ impl<S: State> MikrotikAPI<S> {
             if let Ok(mut map) = self.tag_map.lock() {
                 map.remove(&new_tag);
             }
-            cloned_call.disconnect();
+            caller_call.disconnect();
             return Err(e);
         }
 
-        Ok(cloned_call)
+        Ok(caller_call)
     }
 }
 
@@ -763,7 +763,11 @@ mod tests {
         let next_item = timeout(Duration::from_secs(1), stream.next())
             .await
             .expect("streaming call hung after event_loop exit!");
-        assert!(next_item.is_none());
+        assert!(matches!(next_item, Some(Response::Fatal)));
+        let end_item = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("streaming call hung waiting for end of stream!");
+        assert!(end_item.is_none());
 
         // 6. cancel resolves immediately within 1s
         let cancel_res = timeout(Duration::from_secs(1), authed_api.cancel(10))
