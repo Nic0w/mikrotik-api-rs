@@ -8,11 +8,14 @@ use std::{
 
 use serde::de::DeserializeOwned;
 
-use crate::api::{de::deserialize_sentence, Response};
+use crate::api::{
+    de::{deserialize_sentence, DeserializerError},
+    Response,
+};
 
 use super::{AsyncCall, CallError, InnerCall, ThreadSafeInnerCall};
 
-pub struct OneShotCall<T>(ThreadSafeInnerCall<Response<T>>);
+pub struct OneShotCall<T>(ThreadSafeInnerCall<Result<Response<T>, DeserializerError>>);
 
 impl<T: Debug> OneShotCall<T> {
     pub fn new() -> Self {
@@ -32,13 +35,23 @@ impl<T> Clone for OneShotCall<T> {
 
 impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
     fn push_reply(&mut self, sentence: Vec<String>) -> Result<(), CallError> {
-        let value = deserialize_sentence(sentence.as_slice())?;
+        let res = deserialize_sentence(sentence.as_slice());
 
         if let Ok(mut call) = self.0.lock() {
-            if call.inner.is_none() {
-                let _ = call.inner.insert(value);
+            match res {
+                Ok(value) => {
+                    if call.inner.is_none() {
+                        let _ = call.inner.insert(Ok(value));
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    if call.inner.is_none() {
+                        let _ = call.inner.insert(Err(e.clone()));
+                    }
+                    return Err(CallError::BadSentence(e));
+                }
             }
-            return Ok(());
         }
 
         Err(CallError::BadLock)
@@ -47,7 +60,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
     fn done(&mut self) -> Result<(), CallError> {
         if let Ok(mut call) = self.0.lock() {
             if call.inner.is_none() {
-                call.inner = Some(Response::Done);
+                call.inner = Some(Ok(Response::Done));
             }
             call.done()?;
 
@@ -60,7 +73,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
     fn disconnect(&mut self) {
         if let Ok(mut call) = self.0.lock() {
             if call.inner.is_none() {
-                call.inner = Some(Response::Fatal);
+                call.inner = Some(Ok(Response::Fatal));
             }
             let _ = call.done();
         }
@@ -68,7 +81,7 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
 }
 
 impl<T: Debug> Future for OneShotCall<T> {
-    type Output = Response<T>;
+    type Output = Result<Response<T>, DeserializerError>;
 
     fn poll(
         self: Pin<&mut Self>,

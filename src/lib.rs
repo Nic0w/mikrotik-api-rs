@@ -122,6 +122,17 @@ mod tests {
             _ => panic!("unexpected deserializer error variant"),
         }
 
+        // Verify Error::Deserialize and From<DeserializerError> for Error
+        let err_de: Error = de_err.clone().into();
+        match &err_de {
+            Error::Deserialize(DeserializerError::MissingWord) => {}
+            _ => panic!("unexpected Error::Deserialize variant"),
+        }
+        assert_eq!(
+            format!("{}", err_de),
+            "deserialization error: missing word to finish the sentence"
+        );
+
         // Verify TrapCategory is publicly accessible and usable
         let category = TrapCategory::ArgumentValueFailure;
         assert_eq!(category as u8, 1);

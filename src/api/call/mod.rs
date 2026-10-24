@@ -138,7 +138,7 @@ mod tests {
         // Next poll returns Ready(Response::Done)
         assert!(matches!(
             Pin::new(&mut call).poll(&mut cx),
-            Poll::Ready(Response::Done)
+            Poll::Ready(Ok(Response::Done))
         ));
     }
 
@@ -165,7 +165,8 @@ mod tests {
         // Next poll returns Ready with the 1 !re item
         let res = Pin::new(&mut call).poll(&mut cx);
         match res {
-            Poll::Ready(items) => assert_eq!(items.len(), 1),
+            Poll::Ready(Ok(items)) => assert_eq!(items.len(), 1),
+            Poll::Ready(Err(e)) => panic!("expected Poll::Ready(Ok), got Err({e:?})"),
             Poll::Pending => panic!("expected Poll::Ready"),
         }
     }
@@ -201,7 +202,7 @@ mod tests {
         let waker3 = counting_waker(count3.clone());
         assert!(matches!(
             Pin::new(&mut fast_call).poll(&mut Context::from_waker(&waker3)),
-            Poll::Ready(Response::Done)
+            Poll::Ready(Ok(Response::Done))
         ));
         assert_eq!(count3.load(Ordering::SeqCst), 0);
     }
@@ -224,7 +225,7 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(res, Response::Done));
+        assert!(matches!(res, Ok(Response::Done)));
         assert_eq!(
             polls, 2,
             "expected exactly 2 polls across 25ms wait, got {polls}"
