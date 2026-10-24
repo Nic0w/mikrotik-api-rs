@@ -109,6 +109,13 @@ pub async fn event_loop<R: AsyncRead + Unpin>(mut socket: R, tags: SharedTagMap)
                                                 id, de_err
                                             );
                                         }
+                                        CallError::ChannelClosed => {
+                                            debug!(
+                                                "on push_reply (tag {}): stream receiver dropped, removing tag",
+                                                id
+                                            );
+                                            guarded_map.remove(&id);
+                                        }
                                         other => {
                                             error!("on push_reply: {:?}", other);
                                             break;
@@ -255,11 +262,15 @@ mod tests {
             .into();
         assert!(matches!(array_res, Err(Error::EndOfStream)));
 
-        // 5. Active StreamingCall wakes up and terminates stream (returns None)
+        // 5. Active StreamingCall wakes up and terminates stream (returns Fatal then None)
         let stream_item = timeout(Duration::from_secs(1), streaming.next())
             .await
             .expect("StreamingCall hung after EOF!");
-        assert!(stream_item.is_none());
+        assert_eq!(stream_item, Some(Response::Fatal));
+        let end_item = timeout(Duration::from_secs(1), streaming.next())
+            .await
+            .expect("StreamingCall hung waiting for end of stream!");
+        assert!(end_item.is_none());
     }
 
     #[tokio::test]
@@ -921,5 +932,61 @@ mod tests {
         assert_eq!(res5, Response::Reply(()));
 
         assert!(shared_map.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_loop_removes_dropped_streaming_call_on_next_reply_without_breaking() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        let streaming = StreamingCall::<()>::new();
+        let oneshot = OneShotCall::<()>::new();
+
+        let mut map = TagMap::new();
+        // Tag 1 is the streaming call (inserted as cloned producer with receiver: None)
+        map.insert(1, Box::new(streaming.clone()));
+        // Tag 2 is a concurrent oneshot call to verify event_loop stays alive
+        map.insert(2, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let _loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        assert_eq!(shared_map.lock().unwrap().len(), 2);
+        assert!(shared_map.lock().unwrap().contains_key(&1));
+        assert!(shared_map.lock().unwrap().contains_key(&2));
+
+        // Drop consumer streaming call without calling /cancel
+        drop(streaming);
+
+        // Router sends a !re reply for tag 1
+        client_write.write_all(&[3]).await.unwrap();
+        client_write.write_all(b"!re").await.unwrap();
+        client_write.write_all(&[6]).await.unwrap();
+        client_write.write_all(b".tag=1").await.unwrap();
+        client_write.write_all(&[0]).await.unwrap();
+
+        // Router sends !re and !done for tag 2
+        client_write.write_all(&[3]).await.unwrap();
+        client_write.write_all(b"!re").await.unwrap();
+        client_write.write_all(&[6]).await.unwrap();
+        client_write.write_all(b".tag=2").await.unwrap();
+        client_write.write_all(&[0]).await.unwrap();
+
+        client_write.write_all(&[5]).await.unwrap();
+        client_write.write_all(b"!done").await.unwrap();
+        client_write.write_all(&[6]).await.unwrap();
+        client_write.write_all(b".tag=2").await.unwrap();
+        client_write.write_all(&[0]).await.unwrap();
+
+        // Tag 2 must resolve successfully -> confirms event_loop is alive and healthy
+        let res2 = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("oneshot call timed out")
+            .unwrap();
+        assert_eq!(res2, Response::Reply(()));
+
+        // Shared map must now be empty (Tag 1 removed on ChannelClosed, Tag 2 removed on Done)
+        assert_eq!(shared_map.lock().unwrap().len(), 0);
+        assert!(!shared_map.lock().unwrap().contains_key(&1));
+        assert!(!shared_map.lock().unwrap().contains_key(&2));
     }
 }

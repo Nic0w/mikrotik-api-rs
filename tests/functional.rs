@@ -584,6 +584,44 @@ async fn test_tag_map_cleaned_up_after_commands_and_cancel() {
     assert_eq!(api.active_calls_count(), 0);
 }
 
+/// Verifies that dropping a `StreamingCall` without cancelling it does not crash `event_loop`
+/// or leak memory, and that subsequent commands continue to succeed (Issue #28).
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_streaming_call_dropped_without_cancel_live() {
+    let mut api = connect_and_login().await;
+
+    // 1. Start a streaming call: active calls count increases to 1
+    let mut stream_tag = 0u16;
+    let stream = api.interfaces_changes(&mut stream_tag).await;
+    assert_ne!(stream_tag, 0);
+    assert_eq!(api.active_calls_count(), 1);
+
+    // 2. Drop the stream handle without calling api.cancel(...)
+    drop(stream);
+
+    // 3. Issue subsequent commands; connection and event_loop must remain completely healthy
+    let identity: Identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out fetching identity after stream drop")
+    .expect("failed fetching identity after stream drop");
+    assert!(!identity.name.is_empty());
+
+    // 4. Cancel the tag cleanly so RouterOS stops sending events
+    let _ = timeout(Duration::from_secs(5), api.cancel(stream_tag))
+        .await
+        .expect("timed out cancelling dropped stream tag");
+
+    let start = std::time::Instant::now();
+    while api.active_calls_count() > 0 && start.elapsed() < Duration::from_secs(2) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(api.active_calls_count(), 0);
+}
+
 /// Verifies that deserialization handles attribute values containing '=' characters,
 /// and that HashMap and Trap deserialization work properly against the live router (Issue #6).
 #[tokio::test]
@@ -1017,7 +1055,7 @@ async fn test_calls_after_quit_do_not_panic_or_hang() {
         "expected generic_oneshot_call to return an error after /quit"
     );
 
-    // 4. generic_streaming_call must not panic or hang, stream yields None promptly
+    // 4. generic_streaming_call must not panic or hang, stream yields Fatal then None promptly
     let mut tag = 1234;
     let mut stream = timeout(
         Duration::from_secs(3),
@@ -1030,8 +1068,17 @@ async fn test_calls_after_quit_do_not_panic_or_hang() {
     let next_event = timeout(Duration::from_secs(3), stream.next()).await;
     assert!(next_event.is_ok(), "stream.next() hung after /quit");
     assert!(
-        next_event.unwrap().is_none(),
-        "expected stream to yield None after /quit"
+        matches!(next_event.unwrap(), Some(Response::Fatal)),
+        "expected stream to yield Some(Response::Fatal) after /quit"
+    );
+    let end_event = timeout(Duration::from_secs(3), stream.next()).await;
+    assert!(
+        end_event.is_ok(),
+        "stream.next() hung waiting for end of stream"
+    );
+    assert!(
+        end_event.unwrap().is_none(),
+        "expected stream to yield None after Fatal"
     );
 
     // 5. cancel must not panic or hang, returning Response::Fatal

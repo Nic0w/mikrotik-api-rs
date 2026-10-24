@@ -14,13 +14,13 @@ use tokio::sync::{
 use crate::api::{de::deserialize_sentence, Response};
 
 use super::{AsyncCall, CallError};
+
 pub struct StreamingCall<T> {
     inner: Arc<Mutex<InnerStreamingCall<Response<T>>>>,
-    // sender: Arc<Mutex<Sender<Response<T>>>>
+    receiver: Option<UnboundedReceiver<Response<T>>>,
 }
 
 struct InnerStreamingCall<T> {
-    receiver: UnboundedReceiver<T>,
     sender: UnboundedSender<T>,
     cell: OnceCell<()>,
 }
@@ -39,20 +39,33 @@ impl<T> StreamingCall<T> {
 
         let inner = Arc::new(Mutex::new(InnerStreamingCall {
             sender,
-            receiver,
             cell: OnceCell::new(),
         }));
 
-        Self { inner }
+        Self {
+            inner,
+            receiver: Some(receiver),
+        }
+    }
+}
+
+impl<T> Default for StreamingCall<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
     fn push_reply(&mut self, sentence: Vec<String>) -> Result<(), CallError> {
-        let value = deserialize_sentence(sentence.as_slice())?;
-
         if let Ok(inner) = self.inner.lock() {
-            let _ = inner.sender.send(value);
+            if inner.sender.is_closed() {
+                return Err(CallError::ChannelClosed);
+            }
+            let value = deserialize_sentence(sentence.as_slice())?;
+            inner
+                .sender
+                .send(value)
+                .map_err(|_| CallError::ChannelClosed)?;
 
             return Ok(());
         }
@@ -73,8 +86,10 @@ impl<T: DeserializeOwned + Debug> AsyncCall for StreamingCall<T> {
 
     fn disconnect(&mut self) {
         if let Ok(mut call) = self.inner.lock() {
-            let _ = call.sender.send(Response::Done);
-            let _ = call.done();
+            if call.done().is_ok() {
+                let _ = call.sender.send(Response::Fatal);
+                let _ = call.sender.send(Response::Done);
+            }
         }
     }
 }
@@ -83,6 +98,7 @@ impl<T> Clone for StreamingCall<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            receiver: None,
         }
     }
 }
@@ -94,17 +110,24 @@ impl<T> Stream for StreamingCall<T> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        if let Ok(mut inner) = self.inner.lock() {
-            let next_value = inner.receiver.poll_recv(cx);
+        let this = self.get_mut();
+        if let Some(receiver) = this.receiver.as_mut() {
+            let next_value = receiver.poll_recv(cx);
 
             if let Poll::Ready(Some(Response::Done)) = next_value {
                 // A !done reply is our End Of Stream.
+                this.receiver = None;
+                return Poll::Ready(None);
+            }
+
+            if let Poll::Ready(None) = next_value {
+                this.receiver = None;
                 return Poll::Ready(None);
             }
 
             return next_value;
         }
 
-        Poll::Pending
+        Poll::Ready(None)
     }
 }

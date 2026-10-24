@@ -26,6 +26,7 @@ pub enum CallError {
     DoneWithoutReply,
     BadLock,
     BadSentence(DeserializerError),
+    ChannelClosed,
 }
 
 impl From<DeserializerError> for CallError {
@@ -382,5 +383,53 @@ mod tests {
             }
             other => panic!("expected Response::Trap, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_call_dropped_receiver_returns_channel_closed() {
+        let call = StreamingCall::<()>::new();
+        let mut producer = call.clone();
+
+        // While receiver is alive, push_reply succeeds
+        let res = producer.push_reply(vec![
+            "!re".to_string(),
+            ".tag=1".to_string(),
+            "".to_string(),
+        ]);
+        assert!(res.is_ok());
+
+        // Drop the consumer stream
+        drop(call);
+
+        // Subsequent push_reply fails with ChannelClosed without attempting deserialization
+        let res_after_drop = producer.push_reply(vec![
+            "!re".to_string(),
+            ".tag=1".to_string(),
+            "".to_string(),
+        ]);
+        assert!(matches!(res_after_drop, Err(CallError::ChannelClosed)));
+    }
+
+    #[tokio::test]
+    async fn test_streaming_call_disconnect_emits_fatal_then_none() {
+        use futures::StreamExt;
+
+        let mut call = StreamingCall::<()>::new();
+        let mut producer = call.clone();
+
+        producer.disconnect();
+
+        // First poll yields Some(Response::Fatal)
+        let item1 = call.next().await;
+        assert_eq!(item1, Some(Response::Fatal));
+
+        // Second poll yields None (end of stream)
+        let item2 = call.next().await;
+        assert_eq!(item2, None);
+
+        // Calling disconnect again does not emit duplicate events
+        producer.disconnect();
+        let item3 = call.next().await;
+        assert_eq!(item3, None);
     }
 }
