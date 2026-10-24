@@ -1144,3 +1144,81 @@ async fn test_done_attributes_ret_and_unit_oneshot_live() {
         non_unit_res
     );
 }
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_dot_id_and_proplist_wire_formatting_live() {
+    let mut api = connect_and_login().await;
+
+    // 1. .proplist with (".proplist", "name") returning only ["name"]
+    let interfaces = timeout(
+        Duration::from_secs(5),
+        api.generic_array_call::<std::collections::HashMap<String, String>>(
+            "/interface/print",
+            Some(&[(".proplist", "name")]),
+        ),
+    )
+    .await
+    .expect("timed out fetching interfaces with proplist")
+    .expect("failed to fetch interfaces with proplist");
+
+    assert!(!interfaces.is_empty(), "expected at least one interface");
+    for iface in &interfaces {
+        assert_eq!(
+            iface.len(),
+            1,
+            "expected interface reply with .proplist=name to contain ONLY 'name', but got: {:?}",
+            iface.keys()
+        );
+        assert!(
+            iface.contains_key("name"),
+            "expected interface reply to contain 'name'"
+        );
+    }
+
+    // 2. Command with (".id", "*2") formatting as =.id=*2 on the wire
+    let comment_res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<()>(
+            "/interface/comment",
+            Some(&[(".id", "*2"), ("comment", "test-comment")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for /interface/comment");
+
+    let err = match comment_res {
+        Err(e) => e,
+        Ok(_) => panic!("expected read-only user ci-runner to fail commenting interface"),
+    };
+    match err {
+        Error::Remote(msg) => {
+            let lower = msg.to_lowercase();
+            assert!(
+                lower.contains("permission") || lower.contains("permitted"),
+                "expected permission error from router, got: {}",
+                msg
+            );
+            assert!(
+                !lower.contains("missing value of numbers") && !lower.contains("missing =.id="),
+                "router reported missing .id parameter: {}",
+                msg
+            );
+        }
+        other => panic!("expected Error::Remote, got: {:?}", other),
+    }
+
+    // 3. Calling with an extra (".tag", "999") in attributes does not result in duplicate .tag or routing issues
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>(
+            "/system/identity/print",
+            Some(&[(".tag", "999"), ("=.tag", "888")]),
+        ),
+    )
+    .await
+    .expect("timed out waiting for /system/identity/print with duplicate .tag")
+    .expect("failed to execute command with extra .tag attributes");
+
+    assert!(!identity.name.trim().is_empty());
+}

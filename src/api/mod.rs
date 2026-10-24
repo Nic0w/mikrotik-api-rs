@@ -113,26 +113,7 @@ impl<S: State> MikrotikAPI<S> {
         command: &str,
         attributes: &[(&str, &str)],
     ) -> Result<(), Error> {
-        let mut sentence = Vec::with_capacity(1 + attributes.len());
-
-        sentence.push(command.to_owned());
-
-        for (key, value) in attributes {
-            if key.starts_with('?') {
-                if value.is_empty() {
-                    sentence.push(key.to_string());
-                } else {
-                    sentence.push(format!("{}={}", key, value));
-                }
-            } else if key.starts_with(['.', '=']) {
-                //.proplist, .tag
-                sentence.push(format!("{}={}", key, value));
-            } else {
-                // everything else (attributes)
-                sentence.push(format!("={}={}", key, value));
-            }
-        }
-
+        let sentence = format_sentence(command, attributes);
         let bytes = encode_sentence(sentence.as_slice());
 
         self.output.write_all(&bytes).await?;
@@ -178,6 +159,7 @@ impl<S: State> MikrotikAPI<S> {
 
         let tag_str = new_tag.to_string();
 
+        attributes.retain(|(k, _)| *k != ".tag" && *k != "=.tag");
         attributes.insert(0, (".tag", &tag_str));
 
         debug!("do_call: {}", command);
@@ -417,6 +399,31 @@ fn encode_word(word: &str) -> Vec<u8> {
     res
 }
 
+/// Formats a command and its attributes into a RouterOS sentence (list of words).
+pub(super) fn format_sentence(command: &str, attributes: &[(&str, &str)]) -> Vec<String> {
+    let mut sentence = Vec::with_capacity(1 + attributes.len());
+
+    sentence.push(command.to_owned());
+
+    for (key, value) in attributes {
+        if key.starts_with('?') {
+            if value.is_empty() {
+                sentence.push(key.to_string());
+            } else {
+                sentence.push(format!("{}={}", key, value));
+            }
+        } else if *key == ".tag" || key.starts_with('=') {
+            // .tag (control attribute) or pre-prefixed attributes like "=.proplist" / "=.id"
+            sentence.push(format!("{}={}", key, value));
+        } else {
+            // everything else (attributes, including .id, .proplist)
+            sentence.push(format!("={}={}", key, value));
+        }
+    }
+
+    sentence
+}
+
 pub(super) fn encode_sentence<S: AsRef<str>>(words: &[S]) -> Vec<u8> {
     let mut res = vec![];
 
@@ -464,7 +471,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        encode_len, encode_len_usize, encode_sentence, encode_word,
+        encode_len, encode_len_usize, encode_sentence, encode_word, format_sentence,
         read::{read_len, read_sentence},
     };
 
@@ -850,6 +857,108 @@ mod tests {
         assert!(
             !map.is_closed(),
             "tag_map should not be closed by do_call write error"
+        );
+    }
+
+    #[test]
+    fn test_format_sentence_dot_id_and_proplist_wire_formatting() {
+        // .proplist and .id must be prefixed with '='
+        let res = format_sentence("/interface/print", &[(".proplist", "name,type")]);
+        assert_eq!(res, vec!["/interface/print", "=.proplist=name,type"]);
+
+        let res = format_sentence(
+            "/interface/set",
+            &[(".id", "*1"), ("comment", "test"), ("disabled", "yes")],
+        );
+        assert_eq!(
+            res,
+            vec![
+                "/interface/set",
+                "=.id=*1",
+                "=comment=test",
+                "=disabled=yes"
+            ]
+        );
+
+        // Caller pre-prefixed attributes starting with '=' must not double the '='
+        let res = format_sentence(
+            "/interface/print",
+            &[("=.proplist", "name"), ("=.id", "*1")],
+        );
+        assert_eq!(res, vec!["/interface/print", "=.proplist=name", "=.id=*1"]);
+
+        // Control word .tag must NOT be prefixed with '='
+        let res = format_sentence("/system/identity/print", &[(".tag", "42")]);
+        assert_eq!(res, vec!["/system/identity/print", ".tag=42"]);
+
+        // Query filters starting with '?'
+        let res = format_sentence(
+            "/interface/print",
+            &[("?name", "ether1"), ("?running", ""), ("?#|", "")],
+        );
+        assert_eq!(
+            res,
+            vec!["/interface/print", "?name=ether1", "?running", "?#|"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_do_call_filters_duplicate_user_supplied_tags() {
+        use super::{Authenticated, EmptyCall, MikrotikAPI, TagMap};
+        use std::sync::{atomic::AtomicU16, Arc, Mutex};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+
+        let (_, write_half) = client.into_split();
+
+        let tag_map = Arc::new(Mutex::new(TagMap::new()));
+
+        let mut api = MikrotikAPI {
+            output: tokio::io::BufWriter::new(write_half),
+            tag_map,
+            next_tag: AtomicU16::new(1),
+            _state: Authenticated,
+        };
+
+        // Pass user attributes containing both .tag and =.tag duplicates, along with .proplist and .id
+        let user_attrs = [
+            (".tag", "999"),
+            ("=.tag", "888"),
+            (".proplist", "name"),
+            (".id", "*2"),
+        ];
+
+        let _call = api
+            .do_call(
+                "/interface/print",
+                Some(&user_attrs),
+                EmptyCall::new(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Read the sent sentence from the server side
+        let mut buf = vec![0u8; 1024];
+        let n = server.read(&mut buf).await.unwrap();
+        let mut cursor = Cursor::new(&buf[..n]);
+        let sentence = read_sentence(&mut cursor).unwrap();
+
+        assert_eq!(
+            sentence,
+            vec![
+                "/interface/print",
+                ".tag=1",
+                "=.proplist=name",
+                "=.id=*2",
+                "" // sentence terminator
+            ]
         );
     }
 }

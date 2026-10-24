@@ -19,7 +19,7 @@ pub async fn custom_command(
     let mut attributes = Vec::new();
 
     if let Some(list) = proplist.as_deref() {
-        attributes.push(("=.proplist", list))
+        attributes.push((".proplist", list))
     }
 
     let attributes = Some(attributes.as_slice());
