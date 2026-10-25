@@ -149,5 +149,13 @@ mod tests {
             }
             _ => panic!("unexpected response variant"),
         }
+
+        // Verify Error::Tls is publicly accessible and formats correctly
+        let tls_err = Error::Tls("handshake failed".to_string());
+        match &tls_err {
+            Error::Tls(msg) => assert_eq!(msg, "handshake failed"),
+            _ => panic!("unexpected error variant"),
+        }
+        assert_eq!(format!("{}", tls_err), "tls error: handshake failed");
     }
 }

@@ -20,6 +20,8 @@ pub enum Error {
     InvalidWordLength(u8),
     /// Failed to deserialize a router sentence into the target Rust type.
     Deserialize(DeserializerError),
+    /// TLS configuration or handshake error.
+    Tls(String),
 }
 
 impl From<io::Error> for Error {
@@ -51,6 +53,8 @@ impl std::fmt::Display for Error {
             InvalidWordLength(b) => write!(f, "invalid word length prefix byte: {:#04x}", b),
 
             Deserialize(e) => write!(f, "deserialization error: {}", e),
+
+            Tls(msg) => write!(f, "tls error: {}", msg),
         }
     }
 }
