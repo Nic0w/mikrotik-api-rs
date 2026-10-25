@@ -222,6 +222,9 @@ Previously, `send_command` formatted any attribute starting with `.` as `{}={}` 
 ### 18. [RESOLVED in #50 (part of #43)] `OneShotCall::done` Fabricating `Ok(T)` on Bare `!done` for Maps and All-Optional Structs (`src/api/de/mod.rs` & `src/api/call/one_shot.rs`)
 Previously, `deserialize_done_payload` passed the trailing empty sentence terminator `""` of a bare `!done` sentence (`["!done", ".tag=1", ""]`) into `SentenceDeserializer`. When `T` was a map (`HashMap<String, String>`, `BTreeMap`) or a struct whose fields were all `Option<T>` or `#[serde(default)]`, `StructVisitor::next_key_seed` read `""` on the first key and returned `Ok(None)`, causing Serde to construct an empty/default `T` and `OneShotCall::done` to return `Ok(Response::Reply(T::default()))` instead of `Response::Done` (`Err(Error::EmptyResponse)`). This was resolved by introducing `has_done_attributes`, passing an empty word iterator to `SentenceDeserializer` in `deserialize_done_payload` when a `!done` sentence has no data attributes (so only unit types succeed and maps/structs fail with `MissingWord` and resolve to `Response::Done`), and guarding top-level `deserialize_option` on an empty cursor.
 
+### 19. [RESOLVED in #51 (part of #43)] `OneShotCall::disconnect` Returning Stale `Reply` on Mid-Call Disconnect / EOF (`src/api/call/one_shot.rs`)
+Previously, `OneShotCall::disconnect()` only checked `if call.inner.is_none() { call.inner = Some(Ok(Response::Fatal)); }`. If the TCP connection dropped or received `!fatal` after `!re` arrived but before `!done`, `call.inner.is_none()` was `false`, leaving `call.inner` as `Reply(val)` and causing callers to mistakenly treat an interrupted transaction as successful. This was resolved by pattern matching `call.inner` to preserve existing `Response::Trap` router errors while marking all other unfinalized calls (including partial `Reply`) as `Response::Fatal` (`Err(Error::EndOfStream)`).
+
 ---
 
 ## 7. Development Guidelines for Agents
