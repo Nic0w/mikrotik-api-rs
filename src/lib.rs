@@ -15,10 +15,29 @@
 //!
 //! ### Usage
 //!
-//! The library exposes only one function: `connect`, that makes a TCP connection to the provided address.
-//! If successful, a `MikrotikAPI<Disconnected>` object is returned.
-//! It is then necessary to `authenticate` to get a `MikrotikAPI<Authenticated>` object.
-
+//! Plaintext connections to the API service (default port 8728) are established with `connect`:
+//! ```rust,no_run
+//! # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
+//! let disconnected = mikrotik_api::connect("192.168.88.1:8728").await?;
+//! let mut api = disconnected.authenticate("admin", "password").await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Encrypted connections to RouterOS API-SSL (default port 8729) are established with `connect_tls`:
+//! ```rust,no_run
+//! # #[cfg(feature = "tls")]
+//! # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
+//! let disconnected = mikrotik_api::connect_tls("192.168.88.1:8729", "192.168.88.1").await?;
+//! let mut api = disconnected.authenticate("admin", "password").await?;
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "tls"))]
+//! # fn doc() {}
+//! ```
+//!
+//! Custom streams or arbitrary async transports (e.g. mock duplex streams, SSH tunnels) can be wrapped with `MikrotikAPI::from_stream` or `MikrotikAPI::from_parts`.
+//!
 //! Eight functions are then available:
 //! - `system_resources` will make a call to `/system/resource/print`
 //! - `interfaces` will retrieve a list of interfaces with all their properties (``/interface/print``)
@@ -91,14 +110,40 @@ mod api;
 pub use api::model::{
     ActiveUser, Interface, InterfaceChange, InterfaceMTU, Response, SystemResources, TrapCategory,
 };
+#[cfg(feature = "tls")]
+pub use api::tls::{TlsConfig, TlsConfigBuilder};
 pub use api::{Authenticated, DeserializerError, Disconnected, Error, MikrotikAPI};
 
-/// Given an address, opens a connection to the remote API service
-/// the returned object is in a Disconnected state
+/// Given an address, opens a plaintext connection to the remote API service (typically port 8728).
+/// The returned object is in a Disconnected state.
 pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<MikrotikAPI<Disconnected>> {
     let socket = TcpStream::connect(addr).await?;
 
     Ok(MikrotikAPI::new(socket))
+}
+
+/// Given an address and server domain name, opens an encrypted TLS connection to the remote API-SSL service (typically port 8729).
+/// Uses default TLS configuration.
+/// The returned object is in a Disconnected state.
+#[cfg(feature = "tls")]
+pub async fn connect_tls<A: ToSocketAddrs>(
+    addr: A,
+    domain: &str,
+) -> Result<MikrotikAPI<Disconnected>, Error> {
+    connect_tls_with_config(addr, domain, TlsConfig::default()).await
+}
+
+/// Given an address, server domain name, and [`TlsConfig`], opens an encrypted TLS connection to the remote API-SSL service (typically port 8729).
+/// The returned object is in a Disconnected state.
+#[cfg(feature = "tls")]
+pub async fn connect_tls_with_config<A: ToSocketAddrs>(
+    addr: A,
+    domain: &str,
+    config: TlsConfig,
+) -> Result<MikrotikAPI<Disconnected>, Error> {
+    let tls_stream = api::tls::connect_tls_stream(addr, domain, &config).await?;
+
+    Ok(MikrotikAPI::from_stream(tls_stream))
 }
 
 #[cfg(test)]
@@ -148,6 +193,22 @@ mod tests {
                 assert_eq!(message, "no such item");
             }
             _ => panic!("unexpected response variant"),
+        }
+
+        // Verify Error::Tls is publicly accessible and formats correctly
+        let tls_err = Error::Tls("handshake failed".to_string());
+        match &tls_err {
+            Error::Tls(msg) => assert_eq!(msg, "handshake failed"),
+            _ => panic!("unexpected error variant"),
+        }
+        assert_eq!(format!("{}", tls_err), "tls error: handshake failed");
+
+        #[cfg(feature = "tls")]
+        {
+            let config = TlsConfig::builder()
+                .danger_accept_invalid_certs(true)
+                .build();
+            assert!(config.danger_accept_invalid_certs);
         }
     }
 }

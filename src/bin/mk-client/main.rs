@@ -17,11 +17,53 @@ pub async fn main() {
 
     let args = Args::parse();
 
-    let api = match mikrotik_api::connect(&args.address).await {
-        Ok(api) => api,
-        Err(e) => {
-            eprintln!("Failed to connect to {}: {}", args.address, e);
+    let (target_addr, default_domain) = config::resolve_target(&args.address, args.ssl);
+    let _ = &default_domain;
+
+    let api = if args.ssl {
+        #[cfg(feature = "tls")]
+        {
+            let domain = args.tls_domain.unwrap_or(default_domain);
+            let mut builder =
+                mikrotik_api::TlsConfig::builder().danger_accept_invalid_certs(args.insecure);
+
+            if let Some(ca_path) = &args.tls_ca {
+                builder = match builder.add_ca_cert_file(ca_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("Failed to read CA certificate from {:?}: {}", ca_path, e);
+                        std::process::exit(1);
+                    }
+                };
+            }
+
+            let config = builder.build();
+
+            match mikrotik_api::connect_tls_with_config(&target_addr, &domain, config).await {
+                Ok(api) => api,
+                Err(e) => {
+                    eprintln!(
+                        "Failed to connect via TLS to {} (domain: {}): {}",
+                        target_addr, domain, e
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            eprintln!(
+                "Error: SSL/TLS support was disabled at compile time (feature 'tls' is not enabled)"
+            );
             std::process::exit(1);
+        }
+    } else {
+        match mikrotik_api::connect(&target_addr).await {
+            Ok(api) => api,
+            Err(e) => {
+                eprintln!("Failed to connect to {}: {}", target_addr, e);
+                std::process::exit(1);
+            }
         }
     };
 

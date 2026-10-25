@@ -1,5 +1,8 @@
 use std::{env, time::Duration};
 
+#[cfg(feature = "tls")]
+use std::path::{Path, PathBuf};
+
 use mikrotik_api::{Authenticated, Error, MikrotikAPI};
 use serde::Deserialize;
 use tokio::time::timeout;
@@ -15,13 +18,51 @@ fn router_config() -> (String, String, String) {
     (addr, user, pass)
 }
 
+async fn connect_router(addr: &str) -> mikrotik_api::MikrotikAPI<mikrotik_api::Disconnected> {
+    #[cfg(feature = "tls")]
+    if env::var("MIKROTIK_SSL")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        let insecure = env::var("MIKROTIK_INSECURE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        let domain = env::var("MIKROTIK_TLS_DOMAIN").unwrap_or_else(|_| {
+            let host_part = addr.split(':').next().unwrap_or(addr);
+            host_part
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string()
+        });
+
+        let mut builder = mikrotik_api::TlsConfig::builder().danger_accept_invalid_certs(insecure);
+
+        if let Ok(ca_path) = env::var("MIKROTIK_TLS_CA") {
+            builder = builder
+                .add_ca_cert_file(ca_path)
+                .expect("failed to load MIKROTIK_TLS_CA");
+        }
+
+        let config = builder.build();
+        return timeout(
+            Duration::from_secs(5),
+            mikrotik_api::connect_tls_with_config(addr, &domain, config),
+        )
+        .await
+        .expect("timed out connecting to router via TLS")
+        .expect("failed to establish TLS connection to router");
+    }
+
+    timeout(Duration::from_secs(5), mikrotik_api::connect(addr))
+        .await
+        .expect("timed out connecting to router")
+        .expect("failed to establish TCP connection to router")
+}
+
 async fn connect_and_login() -> MikrotikAPI<Authenticated> {
     let (addr, user, pass) = router_config();
 
-    let disconnected = timeout(Duration::from_secs(5), mikrotik_api::connect(&addr))
-        .await
-        .expect("timed out connecting to router")
-        .expect("failed to establish TCP connection to router");
+    let disconnected = connect_router(&addr).await;
 
     timeout(
         Duration::from_secs(5),
@@ -30,6 +71,70 @@ async fn connect_and_login() -> MikrotikAPI<Authenticated> {
     .await
     .expect("timed out authenticating with router")
     .expect("failed to authenticate with valid credentials")
+}
+
+#[cfg(feature = "tls")]
+fn tls_router_config() -> (String, String, String, String, PathBuf) {
+    let (plain_addr, user, pass) = router_config();
+    let ssl_addr = env::var("MIKROTIK_SSL_ADDR").unwrap_or_else(|_| {
+        let (host, _) = if let Some((h, _)) = plain_addr.rsplit_once(':') {
+            (h, "8729")
+        } else {
+            (plain_addr.as_str(), "8729")
+        };
+        format!("{}:8729", host)
+    });
+
+    let domain = env::var("MIKROTIK_TLS_DOMAIN").unwrap_or_else(|_| {
+        let host = ssl_addr
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(&ssl_addr);
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string()
+    });
+
+    let ca_path = env::var("MIKROTIK_TLS_CA")
+        .or_else(|_| env::var("MIKROTIK_CA_FILE"))
+        .or_else(|_| env::var("SSL_CERT_FILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("mikrotik-test-ca.crt");
+            if manifest_path.exists() {
+                manifest_path
+            } else {
+                PathBuf::from("mikrotik-test-ca.crt")
+            }
+        });
+
+    (ssl_addr, user, pass, domain, ca_path)
+}
+
+#[cfg(feature = "tls")]
+async fn connect_and_login_tls() -> MikrotikAPI<Authenticated> {
+    let (addr, user, pass, domain, ca_path) = tls_router_config();
+
+    let config = mikrotik_api::TlsConfig::builder()
+        .add_ca_cert_file(&ca_path)
+        .unwrap_or_else(|e| panic!("failed to load CA certificate from {:?}: {}", ca_path, e))
+        .build();
+
+    let disconnected = timeout(
+        Duration::from_secs(5),
+        mikrotik_api::connect_tls_with_config(&addr, &domain, config),
+    )
+    .await
+    .expect("timed out connecting to router via TLS")
+    .expect("failed to establish TLS connection to router");
+
+    timeout(
+        Duration::from_secs(5),
+        disconnected.authenticate(&user, &pass),
+    )
+    .await
+    .expect("timed out authenticating with router over TLS")
+    .expect("failed to authenticate with valid credentials over TLS")
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,10 +164,7 @@ async fn test_login_success() {
 async fn test_login_invalid_credentials() {
     let (addr, user, _) = router_config();
 
-    let disconnected = timeout(Duration::from_secs(5), mikrotik_api::connect(&addr))
-        .await
-        .expect("timed out connecting to router")
-        .expect("failed to establish TCP connection to router");
+    let disconnected = connect_router(&addr).await;
 
     let result = timeout(
         Duration::from_secs(5),
@@ -1264,4 +1366,154 @@ async fn test_dot_id_and_proplist_wire_formatting_live() {
     .expect("failed to execute command with extra .tag attributes");
 
     assert!(!identity.name.trim().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+#[cfg(feature = "tls")]
+async fn test_tls_connect_and_login_with_ca_cert() {
+    let _api = connect_and_login_tls().await;
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+#[cfg(feature = "tls")]
+async fn test_tls_fetch_router_identity_live() {
+    let mut api = connect_and_login_tls().await;
+
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out fetching router identity over TLS")
+    .expect("failed to fetch router identity over TLS");
+
+    assert!(
+        !identity.name.trim().is_empty(),
+        "router identity name should not be empty"
+    );
+    println!("TLS connected to router identity: '{}'", identity.name);
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+#[cfg(feature = "tls")]
+async fn test_tls_system_resources_live() {
+    let mut api = connect_and_login_tls().await;
+
+    let res = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<BasicResources>("/system/resource/print", None),
+    )
+    .await
+    .expect("timed out fetching basic system resources over TLS")
+    .expect("failed to fetch basic system resources over TLS");
+
+    assert!(!res.uptime.is_empty(), "uptime should not be empty");
+    assert!(!res.version.is_empty(), "version should not be empty");
+    assert!(!res.board_name.is_empty(), "board_name should not be empty");
+    assert!(
+        !res.architecture_name.is_empty(),
+        "architecture_name should not be empty"
+    );
+    assert!(!res.cpu.is_empty(), "cpu should not be empty");
+    assert!(res.cpu_count > 0, "cpu_count should be > 0");
+
+    println!(
+        "TLS router resources: board={}, arch={}, version={}, uptime={}, cpus={}",
+        res.board_name, res.architecture_name, res.version, res.uptime, res.cpu_count
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+#[cfg(feature = "tls")]
+async fn test_tls_interfaces_live() {
+    let mut api = connect_and_login_tls().await;
+
+    let ifaces = timeout(Duration::from_secs(5), api.interfaces())
+        .await
+        .expect("timed out fetching interfaces over TLS")
+        .expect("failed to fetch interfaces over TLS");
+
+    assert!(
+        !ifaces.is_empty(),
+        "router should have at least one interface"
+    );
+    println!("TLS fetched {} interfaces successfully", ifaces.len());
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+#[cfg(feature = "tls")]
+async fn test_tls_insecure_flag_live() {
+    let (addr, user, pass, domain, _) = tls_router_config();
+
+    // Insecure config: accept invalid/self-signed certs without supplying CA cert
+    let config = mikrotik_api::TlsConfig::builder()
+        .danger_accept_invalid_certs(true)
+        .use_native_roots(false)
+        .use_webpki_roots(false)
+        .build();
+
+    let disconnected = timeout(
+        Duration::from_secs(5),
+        mikrotik_api::connect_tls_with_config(&addr, &domain, config),
+    )
+    .await
+    .expect("timed out connecting to router via TLS with insecure flag")
+    .expect("failed to establish TLS connection with insecure flag");
+
+    let mut api = timeout(
+        Duration::from_secs(5),
+        disconnected.authenticate(&user, &pass),
+    )
+    .await
+    .expect("timed out authenticating over TLS with insecure flag")
+    .expect("failed to authenticate over TLS with insecure flag");
+
+    let identity = timeout(
+        Duration::from_secs(5),
+        api.generic_oneshot_call::<Identity>("/system/identity/print", None),
+    )
+    .await
+    .expect("timed out fetching identity over TLS with insecure flag")
+    .expect("failed to fetch identity over TLS with insecure flag");
+
+    assert!(!identity.name.trim().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+#[cfg(feature = "tls")]
+async fn test_tls_untrusted_ca_fails_live() {
+    let (addr, _user, _pass, domain, _) = tls_router_config();
+
+    // Strict config without the custom CA cert and without native/webpki roots: must fail certificate validation
+    let config = mikrotik_api::TlsConfig::builder()
+        .danger_accept_invalid_certs(false)
+        .use_native_roots(false)
+        .use_webpki_roots(false)
+        .build();
+
+    let result = timeout(
+        Duration::from_secs(5),
+        mikrotik_api::connect_tls_with_config(&addr, &domain, config),
+    )
+    .await;
+
+    match result {
+        Ok(Err(Error::Io(e))) => {
+            println!("Untrusted CA correctly rejected with I/O error: {}", e);
+        }
+        Ok(Err(Error::Tls(e))) => {
+            println!("Untrusted CA correctly rejected with TLS error: {}", e);
+        }
+        Ok(Ok(_)) => panic!(
+            "expected TLS connection without CA cert to fail verification, but it succeeded!"
+        ),
+        Err(_) => panic!("timed out connecting to router"),
+        Ok(Err(other)) => panic!("unexpected error variant: {:?}", other),
+    }
 }

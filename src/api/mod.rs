@@ -12,8 +12,8 @@ use futures::Stream;
 use log::{debug, trace};
 use serde::de::DeserializeOwned;
 use tokio::{
-    io::{AsyncWriteExt, BufWriter},
-    net::{tcp::OwnedWriteHalf, TcpStream},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter},
+    net::TcpStream,
 };
 
 use crate::api::call::{ArrayListCall, EmptyCall};
@@ -30,6 +30,8 @@ mod error;
 mod listener;
 pub(crate) mod model;
 mod read;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use de::DeserializerError;
 pub use error::Error;
@@ -93,9 +95,9 @@ impl DerefMut for TagMap {
 
 pub type SharedTagMap = Arc<Mutex<TagMap>>;
 
-/// Struct to interact with Mikrotik RouterOS API on port 8728
+/// Struct to interact with Mikrotik RouterOS API on port 8728 (plaintext) or port 8729 (SSL/TLS).
 pub struct MikrotikAPI<S: State> {
-    output: BufWriter<OwnedWriteHalf>,
+    output: BufWriter<Box<dyn AsyncWrite + Send + Unpin>>,
     tag_map: SharedTagMap,
     next_tag: AtomicU16,
 
@@ -178,10 +180,13 @@ impl<S: State> MikrotikAPI<S> {
 }
 
 impl MikrotikAPI<Disconnected> {
-    pub(crate) fn new(socket: TcpStream) -> Self {
-        let (sock_read, sock_write) = socket.into_split();
-
-        let output = BufWriter::new(sock_write);
+    /// Creates a new `MikrotikAPI` in the `Disconnected` state from arbitrary asynchronous reader and writer halves.
+    pub fn from_parts<R, W>(read_half: R, write_half: W) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let output = BufWriter::new(Box::new(write_half) as Box<dyn AsyncWrite + Send + Unpin>);
 
         let tag_map = TagMap::new();
 
@@ -190,7 +195,7 @@ impl MikrotikAPI<Disconnected> {
 
         let map_clone = shared_map.clone();
 
-        tokio::task::spawn(event_loop(sock_read, map_clone));
+        tokio::task::spawn(event_loop(read_half, map_clone));
 
         Self {
             output,
@@ -198,6 +203,20 @@ impl MikrotikAPI<Disconnected> {
             next_tag: AtomicU16::new(1),
             _state: Disconnected,
         }
+    }
+
+    /// Creates a new `MikrotikAPI` in the `Disconnected` state from any duplex asynchronous stream.
+    pub fn from_stream<S>(stream: S) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        let (read_half, write_half) = tokio::io::split(stream);
+        Self::from_parts(read_half, write_half)
+    }
+
+    pub(crate) fn new(socket: TcpStream) -> Self {
+        let (sock_read, sock_write) = socket.into_split();
+        Self::from_parts(sock_read, sock_write)
     }
 
     /// Authenticate user with its login & password
@@ -826,7 +845,7 @@ mod tests {
         assert!(!tag_map.lock().unwrap().is_closed());
 
         let mut api = MikrotikAPI {
-            output: BufWriter::new(write_half),
+            output: BufWriter::new(Box::new(write_half)),
             tag_map: tag_map.clone(),
             next_tag: AtomicU16::new(42),
             _state: Authenticated,
@@ -920,7 +939,7 @@ mod tests {
         let tag_map = Arc::new(Mutex::new(TagMap::new()));
 
         let mut api = MikrotikAPI {
-            output: tokio::io::BufWriter::new(write_half),
+            output: tokio::io::BufWriter::new(Box::new(write_half)),
             tag_map,
             next_tag: AtomicU16::new(1),
             _state: Authenticated,
@@ -960,5 +979,28 @@ mod tests {
                 "" // sentence terminator
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn test_from_stream_and_from_parts_mock_duplex() {
+        use super::MikrotikAPI;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_stream, mut server_stream) = tokio::io::duplex(4096);
+        let api = MikrotikAPI::from_stream(client_stream);
+
+        // Spawn a task simulating router answering /login with !done
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024];
+            let _n = server_stream.read(&mut buf).await.unwrap();
+
+            // Send !done response with tag=1
+            let response = encode_sentence(&["!done", ".tag=1", ""]);
+            server_stream.write_all(&response).await.unwrap();
+            server_stream.flush().await.unwrap();
+        });
+
+        let auth_res = api.authenticate("admin", "secret").await;
+        assert!(auth_res.is_ok());
     }
 }
