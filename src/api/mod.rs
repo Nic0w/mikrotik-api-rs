@@ -30,6 +30,8 @@ mod error;
 mod listener;
 pub(crate) mod model;
 mod read;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use de::DeserializerError;
 pub use error::Error;
