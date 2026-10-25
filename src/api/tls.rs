@@ -1,7 +1,7 @@
-use std::{fmt::Debug, io::Cursor, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use log::warn;
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls_pki_types::{pem::PemObject, CertificateDer, ServerName, UnixTime};
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio_rustls::{
     client::TlsStream,
@@ -197,9 +197,8 @@ pub fn create_client_config(config: &TlsConfig) -> Result<Arc<ClientConfig>, Err
     }
 
     for pem_data in &config.ca_certs {
-        let mut cursor = Cursor::new(pem_data);
         let mut parsed_any = false;
-        for cert_result in rustls_pemfile::certs(&mut cursor) {
+        for cert_result in CertificateDer::pem_slice_iter(pem_data) {
             match cert_result {
                 Ok(cert) => {
                     root_store

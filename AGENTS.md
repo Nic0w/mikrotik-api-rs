@@ -229,6 +229,9 @@ Previously, `deserialize_done_payload` passed the trailing empty sentence termin
 ### 19. [RESOLVED in #51 (part of #43)] `OneShotCall::disconnect` Returning Stale `Reply` on Mid-Call Disconnect / EOF (`src/api/call/one_shot.rs`)
 Previously, `OneShotCall::disconnect()` only checked `if call.inner.is_none() { call.inner = Some(Ok(Response::Fatal)); }`. If the TCP connection dropped or received `!fatal` after `!re` arrived but before `!done`, `call.inner.is_none()` was `false`, leaving `call.inner` as `Reply(val)` and causing callers to mistakenly treat an interrupted transaction as successful. This was resolved by pattern matching `call.inner` to preserve existing `Response::Trap` router errors while marking all other unfinalized calls (including partial `Reply`) as `Response::Fatal` (`Err(Error::EndOfStream)`).
 
+### 20. [RESOLVED] Dependencies Modernization, Vulnerability Mitigation, and CLI Feature Gating
+Direct dependencies were upgraded to modern stable releases, resolving security advisories for `bytes` (CVE-2026-25541 / RUSTSEC-2026-0007), `tokio` (RUSTSEC-2025-0023, RUSTSEC-2026-0386), `time` (CVE-2026-25727 via `simple_logger 5.x`), and `atty` (RUSTSEC-2024-0375). The unmaintained `rustls-pemfile` crate (RUSTSEC-2025-0134) was eliminated by leveraging `rustls_pki_types::pem::PemObject` (`CertificateDer::pem_slice_iter`). Tokio 1.43+ non-blocking socket enforcement for `TcpStream::from_std` was accommodated in unit tests via `client.set_nonblocking(true)`. Furthermore, CLI-specific dependencies (`clap`, `dialoguer`, `simple_logger`, `human_bytes`) were gated behind the optional `cli` feature with `default = ["tls", "cli"]` and `mk-client` marked with `required-features = ["cli"]`, allowing downstream library consumers to avoid compiling CLI dependencies.
+
 ---
 
 ## 7. Development Guidelines for Agents

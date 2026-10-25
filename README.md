@@ -101,7 +101,7 @@ tokio::spawn(changes.for_each(|item| async move {
  As of now it serves more as an example of library usage rather than having a real, purposeful goal.
  
  ```
-mk-client 0.3.0
+mk-client 0.4.0
 
 USAGE:
     mk-client [OPTIONS] --address <ADDRESS> --login <LOGIN> <SUBCOMMAND>

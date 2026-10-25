@@ -831,6 +831,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let client = std::net::TcpStream::connect(addr).unwrap();
+        client.set_nonblocking(true).unwrap();
         let (server, _) = listener.accept().unwrap();
         drop(server);
 
