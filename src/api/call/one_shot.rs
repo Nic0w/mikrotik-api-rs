@@ -98,8 +98,13 @@ impl<T: DeserializeOwned + Debug> AsyncCall for OneShotCall<T> {
 
     fn disconnect(&mut self) {
         if let Ok(mut call) = self.0.lock() {
-            if call.inner.is_none() {
-                call.inner = Some(Ok(Response::Fatal));
+            match &call.inner {
+                Some(Ok(Response::Trap { .. })) => {
+                    // Keep existing router trap error
+                }
+                _ => {
+                    call.inner = Some(Ok(Response::Fatal));
+                }
             }
             let _ = call.done();
         }

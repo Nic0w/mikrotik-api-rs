@@ -989,4 +989,48 @@ mod tests {
         assert!(!shared_map.lock().unwrap().contains_key(&1));
         assert!(!shared_map.lock().unwrap().contains_key(&2));
     }
+
+    #[tokio::test]
+    async fn test_event_loop_mid_call_eof_marks_oneshot_as_fatal() {
+        let (mut client_write, server_read) = tokio::io::duplex(256);
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            name: String,
+        }
+
+        let oneshot = OneShotCall::<Item>::new();
+        let mut map = TagMap::new();
+        map.insert(1, Box::new(oneshot.clone()));
+        let shared_map = Arc::new(Mutex::new(map));
+
+        let loop_handle = tokio::spawn(event_loop(server_read, shared_map.clone()));
+
+        // 1. Send `!re` sentence with data
+        client_write
+            .write_all(&encode_sentence(&["!re", "=name=partial_item", ".tag=1"]))
+            .await
+            .unwrap();
+
+        // Give event_loop a brief moment to process the !re sentence
+        tokio::time::sleep(Duration::from_millis(15)).await;
+
+        // 2. Drop writer to cause unexpected socket EOF before `!done` arrives
+        drop(client_write);
+
+        timeout(Duration::from_secs(1), loop_handle)
+            .await
+            .expect("event_loop hung on EOF")
+            .expect("event_loop panicked");
+
+        // 3. OneShotCall must yield Response::Fatal -> Err(Error::EndOfStream), NOT Reply("partial_item")
+        let res = timeout(Duration::from_secs(1), oneshot)
+            .await
+            .expect("OneShotCall timed out")
+            .unwrap();
+        assert_eq!(res, Response::Fatal);
+        let result: Result<Item, Error> = res.into();
+        assert!(matches!(result, Err(Error::EndOfStream)));
+        assert!(shared_map.lock().unwrap().is_empty());
+    }
 }

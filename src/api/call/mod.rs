@@ -509,4 +509,71 @@ mod tests {
         let item3 = call.next().await;
         assert_eq!(item3, None);
     }
+
+    #[tokio::test]
+    async fn test_oneshot_disconnect_after_reply_yields_fatal() {
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            name: String,
+        }
+
+        let call = OneShotCall::<Item>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        // 1. Receive !re reply
+        caller
+            .push_reply(vec![
+                "!re".to_string(),
+                "=name=partial".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        // 2. Disconnect happens before !done arrives
+        caller.disconnect();
+
+        // 3. Must resolve to Fatal -> EndOfStream, NOT Reply("partial")
+        let res = call.await.expect("call failed");
+        assert_eq!(res, Response::Fatal);
+        let result: Result<Item, crate::api::Error> = res.into();
+        assert!(matches!(result, Err(crate::api::Error::EndOfStream)));
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_disconnect_after_trap_preserves_trap() {
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            name: String,
+        }
+
+        let call = OneShotCall::<Item>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        // 1. Receive !trap reply
+        caller
+            .push_reply(vec![
+                "!trap".to_string(),
+                "=category=4".to_string(),
+                "=message=interrupted".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+
+        // 2. Disconnect happens
+        caller.disconnect();
+
+        // 3. Must preserve the Trap error
+        let res = call.await.expect("call failed");
+        match &res {
+            Response::Trap { category, message } => {
+                assert_eq!(*category, Some(TrapCategory::GeneralFailure));
+                assert_eq!(message, "interrupted");
+            }
+            other => panic!("expected Response::Trap, got {:?}", other),
+        }
+        let result: Result<Item, crate::api::Error> = res.into();
+        assert!(matches!(result, Err(crate::api::Error::Remote(msg)) if msg == "interrupted"));
+    }
 }
