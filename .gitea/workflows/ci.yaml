@@ -88,6 +88,7 @@ jobs:
       MIKROTIK_ADDR: ${{ vars.MIKROTIK_TEST_ADDR }}
       MIKROTIK_USER: ${{ secrets.MIKROTIK_TEST_USER }}
       MIKROTIK_PASS: ${{ secrets.MIKROTIK_TEST_PASS }}
+      MIKROTIK_CA_CERT: ${{ secrets.MIKROTIK_TEST_CA }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -104,6 +105,25 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Configure Test CA certificate
+        if: env.MIKROTIK_CA_CERT != ''
+        run: |
+          CA_DIR="${RUNNER_TEMP:-/tmp}/mikrotik-ca"
+          mkdir -p "$CA_DIR"
+          echo "$MIKROTIK_CA_CERT" > "$CA_DIR/mikrotik-test-ca.crt"
+          echo "MIKROTIK_CA_FILE=$CA_DIR/mikrotik-test-ca.crt" >> "$GITHUB_ENV"
+
+          # Prepare combined CA bundle if system bundle exists so external TLS continues working
+          if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+            cat /etc/ssl/certs/ca-certificates.crt "$CA_DIR/mikrotik-test-ca.crt" > "$CA_DIR/combined-ca.crt"
+            echo "SSL_CERT_FILE=$CA_DIR/combined-ca.crt" >> "$GITHUB_ENV"
+          elif [ -f /etc/ssl/cert.pem ]; then
+            cat /etc/ssl/cert.pem "$CA_DIR/mikrotik-test-ca.crt" > "$CA_DIR/combined-ca.crt"
+            echo "SSL_CERT_FILE=$CA_DIR/combined-ca.crt" >> "$GITHUB_ENV"
+          else
+            echo "SSL_CERT_FILE=$CA_DIR/mikrotik-test-ca.crt" >> "$GITHUB_ENV"
+          fi
 
       - name: Run functional tests against RouterOS
         run: cargo test --test functional --locked -- --ignored --test-threads=1 --nocapture
