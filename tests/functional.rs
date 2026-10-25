@@ -15,13 +15,51 @@ fn router_config() -> (String, String, String) {
     (addr, user, pass)
 }
 
+async fn connect_router(addr: &str) -> mikrotik_api::MikrotikAPI<mikrotik_api::Disconnected> {
+    #[cfg(feature = "tls")]
+    if env::var("MIKROTIK_SSL")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        let insecure = env::var("MIKROTIK_INSECURE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        let domain = env::var("MIKROTIK_TLS_DOMAIN").unwrap_or_else(|_| {
+            let host_part = addr.split(':').next().unwrap_or(addr);
+            host_part
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string()
+        });
+
+        let mut builder = mikrotik_api::TlsConfig::builder().danger_accept_invalid_certs(insecure);
+
+        if let Ok(ca_path) = env::var("MIKROTIK_TLS_CA") {
+            builder = builder
+                .add_ca_cert_file(ca_path)
+                .expect("failed to load MIKROTIK_TLS_CA");
+        }
+
+        let config = builder.build();
+        return timeout(
+            Duration::from_secs(5),
+            mikrotik_api::connect_tls_with_config(addr, &domain, config),
+        )
+        .await
+        .expect("timed out connecting to router via TLS")
+        .expect("failed to establish TLS connection to router");
+    }
+
+    timeout(Duration::from_secs(5), mikrotik_api::connect(addr))
+        .await
+        .expect("timed out connecting to router")
+        .expect("failed to establish TCP connection to router")
+}
+
 async fn connect_and_login() -> MikrotikAPI<Authenticated> {
     let (addr, user, pass) = router_config();
 
-    let disconnected = timeout(Duration::from_secs(5), mikrotik_api::connect(&addr))
-        .await
-        .expect("timed out connecting to router")
-        .expect("failed to establish TCP connection to router");
+    let disconnected = connect_router(&addr).await;
 
     timeout(
         Duration::from_secs(5),
@@ -59,10 +97,7 @@ async fn test_login_success() {
 async fn test_login_invalid_credentials() {
     let (addr, user, _) = router_config();
 
-    let disconnected = timeout(Duration::from_secs(5), mikrotik_api::connect(&addr))
-        .await
-        .expect("timed out connecting to router")
-        .expect("failed to establish TCP connection to router");
+    let disconnected = connect_router(&addr).await;
 
     let result = timeout(
         Duration::from_secs(5),

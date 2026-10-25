@@ -15,10 +15,29 @@
 //!
 //! ### Usage
 //!
-//! The library exposes only one function: `connect`, that makes a TCP connection to the provided address.
-//! If successful, a `MikrotikAPI<Disconnected>` object is returned.
-//! It is then necessary to `authenticate` to get a `MikrotikAPI<Authenticated>` object.
-
+//! Plaintext connections to the API service (default port 8728) are established with `connect`:
+//! ```rust,no_run
+//! # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
+//! let disconnected = mikrotik_api::connect("192.168.88.1:8728").await?;
+//! let mut api = disconnected.authenticate("admin", "password").await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Encrypted connections to RouterOS API-SSL (default port 8729) are established with `connect_tls`:
+//! ```rust,no_run
+//! # #[cfg(feature = "tls")]
+//! # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
+//! let disconnected = mikrotik_api::connect_tls("192.168.88.1:8729", "192.168.88.1").await?;
+//! let mut api = disconnected.authenticate("admin", "password").await?;
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "tls"))]
+//! # fn doc() {}
+//! ```
+//!
+//! Custom streams or arbitrary async transports (e.g. mock duplex streams, SSH tunnels) can be wrapped with `MikrotikAPI::from_stream` or `MikrotikAPI::from_parts`.
+//!
 //! Eight functions are then available:
 //! - `system_resources` will make a call to `/system/resource/print`
 //! - `interfaces` will retrieve a list of interfaces with all their properties (``/interface/print``)

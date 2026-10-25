@@ -20,9 +20,30 @@ There is still much to do, like support query words, ...
 
 ### Usage
 
-The library exposes only one function: `connect`, that makes a TCP connection to the provided address.
-If successful, a `MikrotikAPI<Disconnected>` object is returned.
-It is then necessary to `authenticate` to get a `MikrotikAPI<Authenticated>` object.
+#### Plaintext Connection (Port 8728)
+```rust
+let disconnected = mikrotik_api::connect("192.168.88.1:8728").await?;
+let mut api = disconnected.authenticate("admin", "password").await?;
+```
+
+#### Encrypted TLS Connection (Port 8729)
+```rust
+// Connect using default TLS configuration (system roots + webpki-roots)
+let disconnected = mikrotik_api::connect_tls("192.168.88.1:8729", "192.168.88.1").await?;
+let mut api = disconnected.authenticate("admin", "password").await?;
+
+// Or configure custom CA / allow self-signed certificates:
+let config = mikrotik_api::TlsConfig::builder()
+    .danger_accept_invalid_certs(true) // For self-signed certificates
+    .build();
+let disconnected = mikrotik_api::connect_tls_with_config("192.168.88.1:8729", "192.168.88.1", config).await?;
+```
+
+#### Custom Streams
+Any duplex async stream (e.g. Unix sockets, SSH tunnels, mock streams) can be wrapped directly:
+```rust
+let api = mikrotik_api::MikrotikAPI::from_stream(my_duplex_stream);
+```
 
 Eight functions are then available:
  - `system_resources` will make a call to `/system/resource/print`
@@ -80,17 +101,21 @@ tokio::spawn(changes.for_each(|item| async move {
  As of now it serves more as an example of library usage rather than having a real, purposeful goal.
  
  ```
-mk-client 0.1.0
+mk-client 0.3.0
 
 USAGE:
-    mk-client --address <ADDRESS> --login <LOGIN> --password <PASSWORD> <SUBCOMMAND>
+    mk-client [OPTIONS] --address <ADDRESS> --login <LOGIN> <SUBCOMMAND>
 
 OPTIONS:
-    -A, --address <ADDRESS>      <HOST>:<PORT>
-    -h, --help                   Print help information
-    -L, --login <LOGIN>          
-    -P, --password <PASSWORD>    
-    -V, --version                Print version information
+    -A, --address <ADDRESS>        <HOST> or <HOST>:<PORT>
+    -s, --ssl                      Connect using SSL/TLS (default port: 8729)
+    -k, --insecure                 Allow insecure / self-signed server certificates
+        --tls-domain <TLS_DOMAIN>  Override TLS server name for SNI and certificate validation
+        --tls-ca <TLS_CA>          Path to custom CA certificate file (PEM format)
+    -L, --login <LOGIN>            
+    -P, --password <PASSWORD>      
+    -h, --help                     Print help
+    -V, --version                  Print version
 
 SUBCOMMANDS:
     active-users    
@@ -101,10 +126,10 @@ SUBCOMMANDS:
 Right now it comes with three subcommands:
  - `identify`: will print your router's name and its resources (with `--full`)
  - `active-users`: will listen to user activity and display events in a log-like manner
- - `custom`, the best of all, allows to call arbitrary commands of all sorts (one-off, arraylist, streaming). Example, listening in real-time to log events:
+ - `custom`, the best of all, allows to call arbitrary commands of all sorts (one-off, arraylist, streaming). Example, listening in real-time to log events over SSL with a self-signed certificate:
   
 ```bash
-$ target/release/mk-client -A 192.168.88.1:8728 -L admin -P "P@ssw0rd" custom --listen "/log/listen"
+$ target/release/mk-client -A 192.168.88.1 --ssl -k -L admin -P "P@ssw0rd" custom --listen "/log/listen"
 2022-09-07T21:38:04.659Z INFO [client::custom] New event:
 {
     ".id": "*1CB36",
