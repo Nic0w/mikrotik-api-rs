@@ -1232,7 +1232,7 @@ async fn test_dot_id_and_proplist_wire_formatting_live() {
 
     let err = match comment_res {
         Err(e) => e,
-        Ok(_) => panic!("expected read-only user ci-runner to fail commenting interface"),
+        Ok(_) => panic!("expected read-only user to fail commenting interface"),
     };
     match err {
         Error::Remote(msg) => {
