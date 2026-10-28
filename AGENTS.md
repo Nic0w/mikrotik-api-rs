@@ -107,10 +107,10 @@ let resources = api.system_resources().await?;
 ```
 
 ### 4.2 Multiplexing & Background Event Loop
-- `MikrotikAPI` decouples the underlying transport using `BufWriter<Box<dyn AsyncWrite + Send + Unpin>>` and spawns a background Tokio reader task:
+- `MikrotikAPI` decouples the underlying transport using a shared `Arc<MikrotikInner>` holding `tokio::sync::Mutex<BufWriter<Box<dyn AsyncWrite + Send + Unpin>>>` and spawns a background Tokio reader task:
   - Reader (`R: AsyncRead + Send + Unpin + 'static`): Handed off to a background Tokio task (`event_loop` in `src/api/listener.rs`).
-  - Writer: Wrapped in `BufWriter<Box<dyn AsyncWrite + Send + Unpin>>` inside `MikrotikAPI` for writing outgoing commands.
-- Shared State: `SharedTagMap` (`Arc<Mutex<TagMap>>`).
+  - Writer: Wrapped in `tokio::sync::Mutex<BufWriter<Box<dyn AsyncWrite + Send + Unpin>>>` inside `MikrotikInner`. Lock is acquired exclusively during `send_command` and dropped immediately after write/flush.
+- Shared State: `SharedTagMap` (`Arc<Mutex<TagMap>>`), `AtomicU16` for tag allocation, and async writer mutex are encapsulated in `Arc<MikrotikInner>`. `MikrotikAPI<Authenticated>` derives `Clone` (creating a shallow handle) and methods take `&self`, allowing concurrent multiplexing via `tokio::join!` or sharing across Tokio tasks.
 - For each request:
   1. An incremental tag `u16` (1..=65534) is generated via `AtomicU16` with wrap-around, guaranteeing no collision with active keys in `tag_map`.
   2. The call handler is registered into `tag_map`.
@@ -231,6 +231,9 @@ Previously, `OneShotCall::disconnect()` only checked `if call.inner.is_none() { 
 
 ### 20. [RESOLVED] Dependencies Modernization, Vulnerability Mitigation, and CLI Feature Gating
 Direct dependencies were upgraded to modern stable releases, resolving security advisories for `bytes` (CVE-2026-25541 / RUSTSEC-2026-0007), `tokio` (RUSTSEC-2025-0023, RUSTSEC-2026-0386), `time` (CVE-2026-25727 via `simple_logger 5.x`), and `atty` (RUSTSEC-2024-0375). The unmaintained `rustls-pemfile` crate (RUSTSEC-2025-0134) was eliminated by leveraging `rustls_pki_types::pem::PemObject` (`CertificateDer::pem_slice_iter`). Tokio 1.43+ non-blocking socket enforcement for `TcpStream::from_std` was accommodated in unit tests via `client.set_nonblocking(true)`. Furthermore, CLI-specific dependencies (`clap`, `dialoguer`, `simple_logger`, `human_bytes`) were gated behind the optional `cli` feature with `default = ["tls", "cli"]` and `mk-client` marked with `required-features = ["cli"]`, allowing downstream library consumers to avoid compiling CLI dependencies.
+
+### 21. [RESOLVED in #54] Concurrent Request Multiplexing Unlocked via `&self`, Scoped Writer Lock, and `Clone` Support
+Previously, public query, listener, and execution methods on `MikrotikAPI<Authenticated>` (`generic_oneshot_call`, `generic_array_call`, `system_resources`, `interfaces`, `cancel`, etc.) took `&mut self` and awaited both request transmission and response collection while holding `&mut self`. This prevented concurrent request batching (`tokio::join!`), forced multi-task applications to wrap `MikrotikAPI` in outer mutexes (serializing calls over the multiplexed transport), and blocked `/cancel` from running while queries were in-flight. This was resolved by moving the connection fields (`output`, `tag_map`, `next_tag`) into an `Arc<MikrotikInner>`, wrapping `output` in a `tokio::sync::Mutex` whose lock is held only during `send_command` byte writes and flushes, changing all API methods on `MikrotikAPI<Authenticated>` to take `&self`, and deriving `Clone` on `MikrotikAPI<S>` (`Disconnected` and `Authenticated`), allowing concurrent requests to interleave and execute out-of-order over the underlying full-duplex connection.
 
 ---
 

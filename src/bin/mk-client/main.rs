@@ -78,7 +78,7 @@ pub async fn main() {
         },
     };
 
-    let mut api = match api.authenticate(&args.login, &password).await {
+    let api = match api.authenticate(&args.login, &password).await {
         Ok(api) => api,
         Err(e) => {
             eprintln!("Authentication failed: {}", e);
@@ -88,7 +88,7 @@ pub async fn main() {
 
     use config::Command::*;
     match args.command {
-        Identify { full } => identify::identify(&mut api, full).await,
+        Identify { full } => identify::identify(&api, full).await,
 
         Custom {
             one_off,
@@ -114,7 +114,7 @@ pub async fn main() {
                 }
             };
 
-            custom::custom_command(&mut api, cmd_type, &command, proplist).await;
+            custom::custom_command(&api, cmd_type, &command, proplist).await;
         }
 
         ActiveUsers => {

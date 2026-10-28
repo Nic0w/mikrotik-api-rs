@@ -45,6 +45,23 @@ Any duplex async stream (e.g. Unix sockets, SSH tunnels, mock streams) can be wr
 let api = mikrotik_api::MikrotikAPI::from_stream(my_duplex_stream);
 ```
 
+#### Concurrent Multiplexing & Cloning
+All request methods on `MikrotikAPI<Authenticated>` take `&self`, and handles implement `Clone` (shallow handle sharing the multiplexed connection and background event loop). You can execute requests concurrently over the single connection using `tokio::join!` or clone the client across Tokio tasks without needing external mutexes:
+
+```rust
+// Concurrently batch requests over the single connection
+let (resources, interfaces) = tokio::join!(
+    api.system_resources(),
+    api.interfaces(),
+);
+
+// Or clone handles across async worker tasks
+let api_clone = api.clone();
+tokio::spawn(async move {
+    let _ = api_clone.system_resources().await;
+});
+```
+
 Eight functions are then available:
  - `system_resources` will make a call to `/system/resource/print`
  - `interfaces` will retrieve a list of interfaces with all their properties (``/interface/print``)

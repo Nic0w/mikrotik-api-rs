@@ -35,7 +35,7 @@ struct Identity {
     pub name: String,
 }
 
-pub async fn identify(api: &mut MikrotikAPI<Authenticated>, resources: bool) {
+pub async fn identify(api: &MikrotikAPI<Authenticated>, resources: bool) {
     let identity = match api
         .generic_oneshot_call::<Identity>("/system/identity/print", None)
         .await

@@ -11,7 +11,7 @@ pub enum CommandType {
 }
 
 pub async fn custom_command(
-    api: &mut MikrotikAPI<Authenticated>,
+    api: &MikrotikAPI<Authenticated>,
     cmd_type: CommandType,
     command: &str,
     proplist: Option<String>,

@@ -182,7 +182,7 @@ async fn test_login_invalid_credentials() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_fetch_router_identity() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     let identity = timeout(
         Duration::from_secs(5),
@@ -202,7 +202,7 @@ async fn test_fetch_router_identity() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_fetch_resources_uptime_and_version() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     let res = timeout(
         Duration::from_secs(5),
@@ -231,7 +231,7 @@ async fn test_fetch_resources_uptime_and_version() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_readonly_user_cannot_write() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     let result = timeout(
         Duration::from_secs(5),
@@ -264,7 +264,7 @@ struct InterfaceName {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_word_len_two_bytes_256_endianness() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // "?name=" is 6 bytes; 6 + 250 = 256 bytes (0x0100).
     let filter_val = "a".repeat(250);
@@ -304,7 +304,7 @@ async fn test_word_len_two_bytes_256_endianness() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_word_len_two_bytes_258_corrupted_words() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // "?name=" (6) + "H"*107 + "=bad=" (5) + "H"*140 = 258 bytes (0x0102).
     let filter_val = format!("{}=bad={}", "H".repeat(107), "H".repeat(140));
@@ -337,7 +337,7 @@ async fn test_word_len_two_bytes_258_corrupted_words() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_word_len_three_bytes_16385_slice_range() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // "?name=" is 6 bytes; 6 + 16379 = 16385 bytes (0x4001).
     let filter_val = "a".repeat(16379);
@@ -367,7 +367,7 @@ async fn test_word_len_three_bytes_16385_slice_range() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_word_len_compound_query_and_session_integrity() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     let two_byte_filter = "x".repeat(300); // word len = 306 (2-byte length)
     let three_byte_filter = "y".repeat(16400); // word len = 16406 (3-byte length)
@@ -424,7 +424,7 @@ async fn test_word_len_compound_query_and_session_integrity() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_word_len_tier_boundaries() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     for target_word_len in [0x7Fusize, 0x80, 0x3FFF, 0x4000] {
         // "?name=" prefix is 6 bytes
@@ -496,7 +496,7 @@ impl<F: std::future::Future> std::future::Future for PollCounter<F> {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_no_busy_spin_on_oneshot_and_array_calls() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // 1. Test OneShotCall poll count over live network RTT
     let (identity_res, oneshot_polls) = timeout(
@@ -564,7 +564,7 @@ async fn test_no_busy_spin_on_oneshot_and_array_calls() {
 async fn test_disconnect_on_quit_notifies_inflight_callers_and_streams() {
     use futures::StreamExt;
 
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // 1. Start an infinite streaming listener on the connection
     let mut tag = 0u16;
@@ -598,7 +598,7 @@ async fn test_disconnect_on_quit_notifies_inflight_callers_and_streams() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_oneshot_call_with_empty_reply_does_not_panic() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // Query a non-existent interface via `generic_oneshot_call`:
     // RouterOS replies only with `!done .tag=xxx` (no `!re` frame).
@@ -636,7 +636,7 @@ async fn test_oneshot_call_with_empty_reply_does_not_panic() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_tag_map_cleaned_up_after_commands_and_cancel() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // After login, tag_map should have 0 active calls.
     assert_eq!(api.active_calls_count(), 0);
@@ -691,7 +691,7 @@ async fn test_tag_map_cleaned_up_after_commands_and_cancel() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_streaming_call_dropped_without_cancel_live() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // 1. Start a streaming call: active calls count increases to 1
     let mut stream_tag = 0u16;
@@ -731,7 +731,7 @@ async fn test_streaming_call_dropped_without_cancel_live() {
 async fn test_deserialize_hashmap_and_trap_with_equals() {
     use std::collections::HashMap;
 
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // 1. Fetch system resources as a generic HashMap<String, String>
     let res = timeout(
@@ -785,7 +785,7 @@ async fn test_deserialize_hashmap_and_trap_with_equals() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_non_ascii_query_and_response_handling() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // Send a query containing non-ASCII characters (e.g. searching for an interface with accents/symbols)
     let res = timeout(
@@ -822,7 +822,7 @@ async fn test_mikrotik_api_send_and_spawn_across_threads() {
 
     // Move `api` across thread boundary into a background tokio worker task
     let handle = tokio::spawn(async move {
-        let mut api = api;
+        let api = api;
         let identity = api
             .generic_oneshot_call::<Identity>("/system/identity/print", None)
             .await
@@ -843,7 +843,7 @@ async fn test_mikrotik_api_send_and_spawn_across_threads() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_event_loop_frame_dispatching_and_tag_handling() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // 1. OneShotCall: /system/identity/print
     let identity = timeout(
@@ -896,7 +896,7 @@ async fn test_event_loop_frame_dispatching_and_tag_handling() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_system_resources_deserialization_live() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     let resources = timeout(Duration::from_secs(5), api.system_resources())
         .await
@@ -944,7 +944,7 @@ async fn test_system_resources_deserialization_live() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_interfaces_deserialization_live() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     let ifaces = timeout(Duration::from_secs(5), api.interfaces())
         .await
@@ -991,7 +991,7 @@ async fn test_interfaces_deserialization_live() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_field_enums_signed_ints_and_newtypes_live() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     #[serde(rename_all = "kebab-case")]
@@ -1053,7 +1053,7 @@ async fn test_field_enums_signed_ints_and_newtypes_live() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_deserialization_failure_returns_deserialize_error_and_preserves_connection() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     #[derive(Debug, Deserialize)]
     struct MismatchedStruct {
@@ -1117,7 +1117,7 @@ async fn test_calls_after_quit_do_not_panic_or_hang() {
     use futures::StreamExt;
     use mikrotik_api::Response;
 
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // Send `/quit` to close the API session on the router side
     let _ = timeout(
@@ -1195,7 +1195,7 @@ async fn test_calls_after_quit_do_not_panic_or_hang() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_done_attributes_ret_and_unit_oneshot_live() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     struct RetCount {
@@ -1293,7 +1293,7 @@ async fn test_done_attributes_ret_and_unit_oneshot_live() {
 #[tokio::test]
 #[ignore = "requires live MikroTik router"]
 async fn test_dot_id_and_proplist_wire_formatting_live() {
-    let mut api = connect_and_login().await;
+    let api = connect_and_login().await;
 
     // 1. .proplist with (".proplist", "name") returning only ["name"]
     let interfaces = timeout(
@@ -1379,7 +1379,7 @@ async fn test_tls_connect_and_login_with_ca_cert() {
 #[ignore = "requires live MikroTik router"]
 #[cfg(feature = "tls")]
 async fn test_tls_fetch_router_identity_live() {
-    let mut api = connect_and_login_tls().await;
+    let api = connect_and_login_tls().await;
 
     let identity = timeout(
         Duration::from_secs(5),
@@ -1400,7 +1400,7 @@ async fn test_tls_fetch_router_identity_live() {
 #[ignore = "requires live MikroTik router"]
 #[cfg(feature = "tls")]
 async fn test_tls_system_resources_live() {
-    let mut api = connect_and_login_tls().await;
+    let api = connect_and_login_tls().await;
 
     let res = timeout(
         Duration::from_secs(5),
@@ -1430,7 +1430,7 @@ async fn test_tls_system_resources_live() {
 #[ignore = "requires live MikroTik router"]
 #[cfg(feature = "tls")]
 async fn test_tls_interfaces_live() {
-    let mut api = connect_and_login_tls().await;
+    let api = connect_and_login_tls().await;
 
     let ifaces = timeout(Duration::from_secs(5), api.interfaces())
         .await
@@ -1465,7 +1465,7 @@ async fn test_tls_insecure_flag_live() {
     .expect("timed out connecting to router via TLS with insecure flag")
     .expect("failed to establish TLS connection with insecure flag");
 
-    let mut api = timeout(
+    let api = timeout(
         Duration::from_secs(5),
         disconnected.authenticate(&user, &pass),
     )
@@ -1516,4 +1516,56 @@ async fn test_tls_untrusted_ca_fails_live() {
         Err(_) => panic!("timed out connecting to router"),
         Ok(Err(other)) => panic!("unexpected error variant: {:?}", other),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_concurrent_multiplexing_tokio_join_live() {
+    let api = connect_and_login().await;
+
+    // Concurrently execute system_resources and interfaces using &api via tokio::join!
+    let (res_resources, res_interfaces) = tokio::join!(
+        timeout(Duration::from_secs(5), api.system_resources()),
+        timeout(Duration::from_secs(5), api.interfaces()),
+    );
+
+    let resources = res_resources
+        .expect("timed out fetching resources concurrently")
+        .expect("failed to fetch resources");
+    let interfaces = res_interfaces
+        .expect("timed out fetching interfaces concurrently")
+        .expect("failed to fetch interfaces");
+
+    assert!(!resources.uptime.is_empty());
+    assert!(!interfaces.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires live MikroTik router"]
+async fn test_clone_across_tasks_live() {
+    let api = connect_and_login().await;
+
+    let api1 = api.clone();
+    let api2 = api.clone();
+
+    let h1 = tokio::spawn(async move {
+        timeout(Duration::from_secs(5), api1.system_resources())
+            .await
+            .expect("timed out in task 1")
+            .expect("failed to fetch resources in task 1")
+    });
+
+    let h2 = tokio::spawn(async move {
+        timeout(Duration::from_secs(5), api2.interfaces())
+            .await
+            .expect("timed out in task 2")
+            .expect("failed to fetch interfaces in task 2")
+    });
+
+    let (r1, r2) = tokio::join!(h1, h2);
+    let resources = r1.expect("task 1 panicked");
+    let interfaces = r2.expect("task 2 panicked");
+
+    assert!(!resources.uptime.is_empty());
+    assert!(!interfaces.is_empty());
 }

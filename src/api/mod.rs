@@ -39,9 +39,11 @@ pub use error::Error;
 pub trait State {}
 
 /// API in disconnected state: socket is connected but user has not yet completed its authentification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Disconnected;
 
 /// API in authenticated state: user has access to the full api.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Authenticated;
 
 impl State for Disconnected {}
@@ -95,37 +97,51 @@ impl DerefMut for TagMap {
 
 pub type SharedTagMap = Arc<Mutex<TagMap>>;
 
-/// Struct to interact with Mikrotik RouterOS API on port 8728 (plaintext) or port 8729 (SSL/TLS).
-pub struct MikrotikAPI<S: State> {
-    output: BufWriter<Box<dyn AsyncWrite + Send + Unpin>>,
+/// Inner state shared among cloned `MikrotikAPI` handles.
+struct MikrotikInner {
+    output: tokio::sync::Mutex<BufWriter<Box<dyn AsyncWrite + Send + Unpin>>>,
     tag_map: SharedTagMap,
     next_tag: AtomicU16,
+}
 
+/// Struct to interact with Mikrotik RouterOS API on port 8728 (plaintext) or port 8729 (SSL/TLS).
+///
+/// Cloning `MikrotikAPI` creates a new shallow handle sharing the underlying connection, writer lock,
+/// and tag demultiplexer.
+#[derive(Clone)]
+pub struct MikrotikAPI<S: State> {
+    inner: Arc<MikrotikInner>,
     _state: S,
+}
+
+impl<S: State + Debug> Debug for MikrotikAPI<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MikrotikAPI")
+            .field("active_calls", &self.active_calls_count())
+            .field("state", &self._state)
+            .finish()
+    }
 }
 
 impl<S: State> MikrotikAPI<S> {
     /// Returns the number of currently active calls registered in the tag map.
     pub fn active_calls_count(&self) -> usize {
-        self.tag_map.lock().map(|m| m.len()).unwrap_or(0)
+        self.inner.tag_map.lock().map(|m| m.len()).unwrap_or(0)
     }
 
-    async fn send_command(
-        &mut self,
-        command: &str,
-        attributes: &[(&str, &str)],
-    ) -> Result<(), Error> {
+    async fn send_command(&self, command: &str, attributes: &[(&str, &str)]) -> Result<(), Error> {
         let sentence = format_sentence(command, attributes);
         let bytes = encode_sentence(sentence.as_slice());
 
-        self.output.write_all(&bytes).await?;
-        self.output.flush().await?;
+        let mut output = self.inner.output.lock().await;
+        output.write_all(&bytes).await?;
+        output.flush().await?;
 
         Ok(())
     }
 
     async fn do_call<T>(
-        &mut self,
+        &self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
         call_type: T,
@@ -141,6 +157,7 @@ impl<S: State> MikrotikAPI<S> {
 
         let new_tag = {
             let mut map = self
+                .inner
                 .tag_map
                 .lock()
                 .map_err(|_| std::io::Error::other("tag_map mutex poisoned"))?;
@@ -150,7 +167,7 @@ impl<S: State> MikrotikAPI<S> {
                 return Err(Error::EndOfStream);
             }
 
-            let assigned_tag = next_tag(&self.next_tag, &map);
+            let assigned_tag = next_tag(&self.inner.next_tag, &map);
             map.insert(assigned_tag, boxed_call);
             assigned_tag
         };
@@ -168,7 +185,7 @@ impl<S: State> MikrotikAPI<S> {
         trace!("do_call: {:?}", attributes);
 
         if let Err(e) = self.send_command(command, attributes.as_slice()).await {
-            if let Ok(mut map) = self.tag_map.lock() {
+            if let Ok(mut map) = self.inner.tag_map.lock() {
                 map.remove(&new_tag);
             }
             caller_call.disconnect();
@@ -186,7 +203,9 @@ impl MikrotikAPI<Disconnected> {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let output = BufWriter::new(Box::new(write_half) as Box<dyn AsyncWrite + Send + Unpin>);
+        let output = tokio::sync::Mutex::new(BufWriter::new(
+            Box::new(write_half) as Box<dyn AsyncWrite + Send + Unpin>
+        ));
 
         let tag_map = TagMap::new();
 
@@ -198,9 +217,11 @@ impl MikrotikAPI<Disconnected> {
         tokio::task::spawn(event_loop(read_half, map_clone));
 
         Self {
-            output,
-            tag_map: shared_map,
-            next_tag: AtomicU16::new(1),
+            inner: Arc::new(MikrotikInner {
+                output,
+                tag_map: shared_map,
+                next_tag: AtomicU16::new(1),
+            }),
             _state: Disconnected,
         }
     }
@@ -221,7 +242,7 @@ impl MikrotikAPI<Disconnected> {
 
     /// Authenticate user with its login & password
     pub async fn authenticate(
-        mut self,
+        self,
         login: &str,
         password: &str,
     ) -> Result<MikrotikAPI<Authenticated>, Error> {
@@ -237,9 +258,7 @@ impl MikrotikAPI<Disconnected> {
         use Response::*;
         match success.await? {
             Done | Reply(_) => Ok(MikrotikAPI {
-                output: self.output,
-                tag_map: self.tag_map,
-                next_tag: self.next_tag,
+                inner: self.inner,
                 _state: Authenticated,
             }),
 
@@ -252,7 +271,7 @@ impl MikrotikAPI<Disconnected> {
 
 impl MikrotikAPI<Authenticated> {
     /// Get details of the remote router such as architecture, processor, RAM, ...
-    pub async fn system_resources(&mut self) -> Result<SystemResources, Error> {
+    pub async fn system_resources(&self) -> Result<SystemResources, Error> {
         self.do_call(
             "/system/resource/print",
             None,
@@ -265,7 +284,7 @@ impl MikrotikAPI<Authenticated> {
     }
 
     /// List interfaces and their state in great details
-    pub async fn interfaces(&mut self) -> Result<Vec<Interface>, Error> {
+    pub async fn interfaces(&self) -> Result<Vec<Interface>, Error> {
         self.do_call("/interface/print", None, ArrayListCall::new(), None)
             .await?
             .await?
@@ -275,17 +294,14 @@ impl MikrotikAPI<Authenticated> {
     }
 
     /// Listen to user activity in terms of login/logout
-    pub async fn active_users(
-        &mut self,
-        tag: &mut u16,
-    ) -> impl Stream<Item = Response<ActiveUser>> {
+    pub async fn active_users(&self, tag: &mut u16) -> impl Stream<Item = Response<ActiveUser>> {
         self.generic_streaming_call("/user/active/listen", None, tag)
             .await
     }
 
     /// Listen to interface changes (up, down, ...)
     pub async fn interfaces_changes(
-        &mut self,
+        &self,
         tag: &mut u16,
     ) -> impl Stream<Item = Response<InterfaceChange>> {
         self.generic_streaming_call("/interface/listen", None, tag)
@@ -294,7 +310,7 @@ impl MikrotikAPI<Authenticated> {
 
     /// Alias for [`interfaces_changes`](Self::interfaces_changes) to listen to interface changes (up, down, ...)
     pub async fn interface_changes(
-        &mut self,
+        &self,
         tag: &mut u16,
     ) -> impl Stream<Item = Response<InterfaceChange>> {
         self.interfaces_changes(tag).await
@@ -302,7 +318,7 @@ impl MikrotikAPI<Authenticated> {
 
     /// Allows to call generic commands returning a one-off response
     pub async fn generic_oneshot_call<T>(
-        &mut self,
+        &self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
     ) -> Result<T, Error>
@@ -317,7 +333,7 @@ impl MikrotikAPI<Authenticated> {
 
     /// Allows to call generic commands returning a finite amount of items
     pub async fn generic_array_call<T>(
-        &mut self,
+        &self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
     ) -> Result<Vec<T>, Error>
@@ -335,7 +351,7 @@ impl MikrotikAPI<Authenticated> {
     /// Allows to generate a stream of events for `listen` endpoints.
     /// Takes a mutable `tag` argument that allows to stop (cancel) the stream afterwards
     pub async fn generic_streaming_call<T>(
-        &mut self,
+        &self,
         command: &str,
         attributes: Option<&[(&str, &str)]>,
         tag: &mut u16,
@@ -359,7 +375,7 @@ impl MikrotikAPI<Authenticated> {
 
     /// Calls `/cancel` on a specific tag.
     /// Primary usage is to stop `listen` commands
-    pub async fn cancel(&mut self, tag: u16) -> Response<()> {
+    pub async fn cancel(&self, tag: u16) -> Response<()> {
         match self
             .do_call(
                 "/cancel",
@@ -633,10 +649,19 @@ mod tests {
     }
 
     #[test]
-    fn test_mikrotik_api_implements_send() {
+    fn test_mikrotik_api_traits() {
         fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        fn assert_clone<T: Clone>() {}
+
         assert_send::<super::MikrotikAPI<super::Disconnected>>();
         assert_send::<super::MikrotikAPI<super::Authenticated>>();
+
+        assert_sync::<super::MikrotikAPI<super::Disconnected>>();
+        assert_sync::<super::MikrotikAPI<super::Authenticated>>();
+
+        assert_clone::<super::MikrotikAPI<super::Disconnected>>();
+        assert_clone::<super::MikrotikAPI<super::Authenticated>>();
     }
 
     #[test]
@@ -734,7 +759,7 @@ mod tests {
         drop(server_stream);
 
         // Wait briefly for event_loop to exit and mark TagMap closed
-        let tags = disconnected_api.tag_map.clone();
+        let tags = disconnected_api.inner.tag_map.clone();
         for _ in 0..50 {
             if tags.lock().unwrap().is_closed() {
                 break;
@@ -743,10 +768,8 @@ mod tests {
         }
         assert!(tags.lock().unwrap().is_closed());
 
-        let mut authed_api = MikrotikAPI {
-            output: disconnected_api.output,
-            tag_map: disconnected_api.tag_map.clone(),
-            next_tag: disconnected_api.next_tag,
+        let authed_api = MikrotikAPI {
+            inner: disconnected_api.inner.clone(),
             _state: Authenticated,
         };
 
@@ -803,9 +826,7 @@ mod tests {
 
         // 7. authenticate resolves immediately within 1s
         let disconn = MikrotikAPI {
-            output: authed_api.output,
-            tag_map: authed_api.tag_map.clone(),
-            next_tag: authed_api.next_tag,
+            inner: authed_api.inner.clone(),
             _state: Disconnected,
         };
         let auth_res = timeout(Duration::from_secs(1), disconn.authenticate("user", "pass"))
@@ -814,8 +835,8 @@ mod tests {
         assert!(auth_res.is_err());
 
         // 8. Verify no orphaned entries remain in TagMap
-        assert!(authed_api.tag_map.lock().unwrap().is_empty());
-        assert!(authed_api.tag_map.lock().unwrap().is_closed());
+        assert!(authed_api.inner.tag_map.lock().unwrap().is_empty());
+        assert!(authed_api.inner.tag_map.lock().unwrap().is_closed());
     }
 
     #[tokio::test]
@@ -845,10 +866,12 @@ mod tests {
         // Note: tag_map is NOT closed! is_closed() == false
         assert!(!tag_map.lock().unwrap().is_closed());
 
-        let mut api = MikrotikAPI {
-            output: BufWriter::new(Box::new(write_half)),
-            tag_map: tag_map.clone(),
-            next_tag: AtomicU16::new(42),
+        let api = MikrotikAPI {
+            inner: Arc::new(super::MikrotikInner {
+                output: tokio::sync::Mutex::new(BufWriter::new(Box::new(write_half))),
+                tag_map: tag_map.clone(),
+                next_tag: AtomicU16::new(42),
+            }),
             _state: Authenticated,
         };
 
@@ -939,10 +962,12 @@ mod tests {
 
         let tag_map = Arc::new(Mutex::new(TagMap::new()));
 
-        let mut api = MikrotikAPI {
-            output: tokio::io::BufWriter::new(Box::new(write_half)),
-            tag_map,
-            next_tag: AtomicU16::new(1),
+        let api = MikrotikAPI {
+            inner: Arc::new(super::MikrotikInner {
+                output: tokio::sync::Mutex::new(tokio::io::BufWriter::new(Box::new(write_half))),
+                tag_map,
+                next_tag: AtomicU16::new(1),
+            }),
             _state: Authenticated,
         };
 
@@ -1003,5 +1028,196 @@ mod tests {
 
         let auth_res = api.authenticate("admin", "secret").await;
         assert!(auth_res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_request_multiplexing_interleaved_and_out_of_order() {
+        use super::MikrotikAPI;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_stream, mut server_stream) = tokio::io::duplex(8192);
+        let disconnected = MikrotikAPI::from_stream(client_stream);
+
+        // Spawn mock router task
+        let server_task = tokio::spawn(async move {
+            // 1. Handle /login command
+            let mut buf = vec![0u8; 1024];
+            let n = server_stream.read(&mut buf).await.unwrap();
+            let mut cursor = Cursor::new(&buf[..n]);
+            let login_cmd = read_sentence(&mut cursor).unwrap();
+            assert_eq!(login_cmd[0], "/login");
+
+            let login_reply = encode_sentence(&["!done", ".tag=1", ""]);
+            server_stream.write_all(&login_reply).await.unwrap();
+            server_stream.flush().await.unwrap();
+
+            // 2. Read the two concurrent requests: /system/slow and /system/fast
+            let mut read_buf = Vec::new();
+            let mut temp = [0u8; 1024];
+            let mut sentences = Vec::new();
+
+            while sentences.len() < 2 {
+                let n = server_stream.read(&mut temp).await.unwrap();
+                read_buf.extend_from_slice(&temp[..n]);
+                let mut cur = Cursor::new(&read_buf[..]);
+                let mut parsed = Vec::new();
+                while let Ok(s) = read_sentence(&mut cur) {
+                    let owned: Vec<String> = s.into_iter().map(|w| w.into_owned()).collect();
+                    parsed.push(owned);
+                }
+                let pos = cur.position() as usize;
+                sentences.extend(parsed);
+                read_buf.drain(..pos);
+            }
+
+            assert_eq!(sentences.len(), 2);
+
+            // Identify tags for slow and fast commands
+            let mut slow_tag = None;
+            let mut fast_tag = None;
+
+            for s in &sentences {
+                let tag = s.iter().find(|w| w.starts_with(".tag=")).unwrap();
+                if s[0] == "/system/slow" {
+                    slow_tag = Some(tag.clone());
+                } else if s[0] == "/system/fast" {
+                    fast_tag = Some(tag.clone());
+                }
+            }
+
+            let slow_tag = slow_tag.expect("missing /system/slow request");
+            let fast_tag = fast_tag.expect("missing /system/fast request");
+
+            // 3. Respond to /system/fast FIRST (out-of-order multiplexing)
+            let fast_re = encode_sentence(&["!re", &fast_tag, "=speed=very-fast", ""]);
+            let fast_done = encode_sentence(&["!done", &fast_tag, ""]);
+            server_stream.write_all(&fast_re).await.unwrap();
+            server_stream.write_all(&fast_done).await.unwrap();
+            server_stream.flush().await.unwrap();
+
+            // 4. Delay before responding to /system/slow
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // 5. Respond to /system/slow
+            let slow_re = encode_sentence(&["!re", &slow_tag, "=speed=very-slow", ""]);
+            let slow_done = encode_sentence(&["!done", &slow_tag, ""]);
+            server_stream.write_all(&slow_re).await.unwrap();
+            server_stream.write_all(&slow_done).await.unwrap();
+            server_stream.flush().await.unwrap();
+        });
+
+        let api = disconnected.authenticate("admin", "secret").await.unwrap();
+
+        let t_fast = Arc::new(tokio::sync::Mutex::new(
+            None as Option<tokio::time::Instant>,
+        ));
+        let t_slow = Arc::new(tokio::sync::Mutex::new(
+            None as Option<tokio::time::Instant>,
+        ));
+
+        let t_fast_clone = t_fast.clone();
+        let t_slow_clone = t_slow.clone();
+
+        // Also tests Clone on MikrotikAPI<Authenticated>
+        let api_clone = api.clone();
+
+        let fut_slow = async {
+            let res = api
+                .generic_oneshot_call::<HashMap<String, String>>("/system/slow", None)
+                .await
+                .unwrap();
+            *t_slow_clone.lock().await = Some(tokio::time::Instant::now());
+            res
+        };
+
+        let fut_fast = async {
+            let res = api_clone
+                .generic_oneshot_call::<HashMap<String, String>>("/system/fast", None)
+                .await
+                .unwrap();
+            *t_fast_clone.lock().await = Some(tokio::time::Instant::now());
+            res
+        };
+
+        // Execute both calls concurrently via tokio::join!
+        let (slow_res, fast_res) = tokio::join!(fut_slow, fut_fast);
+        server_task.await.unwrap();
+
+        assert_eq!(slow_res.get("speed").unwrap(), "very-slow");
+        assert_eq!(fast_res.get("speed").unwrap(), "very-fast");
+
+        let slow_time = t_slow.lock().await.unwrap();
+        let fast_time = t_fast.lock().await.unwrap();
+        assert!(
+            fast_time < slow_time,
+            "fast request must complete before slow request despite being issued concurrently"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_across_spawned_tasks() {
+        use super::MikrotikAPI;
+        use std::collections::HashMap;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_stream, mut server_stream) = tokio::io::duplex(8192);
+        let disconnected = MikrotikAPI::from_stream(client_stream);
+
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024];
+            let _ = server_stream.read(&mut buf).await.unwrap();
+            let login_reply = encode_sentence(&["!done", ".tag=1", ""]);
+            server_stream.write_all(&login_reply).await.unwrap();
+            server_stream.flush().await.unwrap();
+
+            // Read requests from two tasks (buffering stream chunks)
+            let mut read_buf = Vec::new();
+            let mut temp = [0u8; 1024];
+            let mut sentences = Vec::new();
+
+            while sentences.len() < 2 {
+                let n = server_stream.read(&mut temp).await.unwrap();
+                read_buf.extend_from_slice(&temp[..n]);
+                let mut cur = Cursor::new(&read_buf[..]);
+                let mut parsed = Vec::new();
+                while let Ok(s) = read_sentence(&mut cur) {
+                    let owned: Vec<String> = s.into_iter().map(|w| w.into_owned()).collect();
+                    parsed.push(owned);
+                }
+                let pos = cur.position() as usize;
+                sentences.extend(parsed);
+                read_buf.drain(..pos);
+            }
+
+            for s in sentences {
+                let tag = s.iter().find(|w| w.starts_with(".tag=")).unwrap();
+                let reply = encode_sentence(&["!re", tag, "=name=test", ""]);
+                let done = encode_sentence(&["!done", tag, ""]);
+                server_stream.write_all(&reply).await.unwrap();
+                server_stream.write_all(&done).await.unwrap();
+                server_stream.flush().await.unwrap();
+            }
+        });
+
+        let api = disconnected.authenticate("admin", "secret").await.unwrap();
+
+        let api1 = api.clone();
+        let api2 = api.clone();
+
+        let h1 = tokio::spawn(async move {
+            api1.generic_oneshot_call::<HashMap<String, String>>("/task1", None)
+                .await
+        });
+        let h2 = tokio::spawn(async move {
+            api2.generic_oneshot_call::<HashMap<String, String>>("/task2", None)
+                .await
+        });
+
+        let (r1, r2) = tokio::join!(h1, h2);
+        assert!(r1.unwrap().is_ok());
+        assert!(r2.unwrap().is_ok());
     }
 }
