@@ -48,15 +48,16 @@ pub struct UncheckedCommand {
 }
 
 impl UncheckedCommand {
-    /// Creates a new `UncheckedCommand` normalizing comma-separated or missing-slash paths.
+    /// Creates a new `UncheckedCommand` normalizing comma-separated, missing-slash,
+    /// or CLI-style space-separated paths and extracting any inline attributes or queries.
     pub fn new(raw_path: &str) -> Self {
-        let normalized = normalize_command_path(raw_path);
+        let (normalized, attributes, query, proplist) = parse_command_input(raw_path);
         let is_streaming = normalized.ends_with("/listen");
         Self {
             path: normalized,
-            attributes: HashMap::new(),
-            query: Vec::new(),
-            proplist: Vec::new(),
+            attributes,
+            query,
+            proplist,
             is_streaming,
         }
     }
@@ -182,25 +183,80 @@ impl<C: Classifier> SafetyGate<C> {
     }
 }
 
-/// Normalizes raw command paths like "ip,address,print" or "ip/address/print" to "/ip/address/print".
-pub fn normalize_command_path(raw: &str) -> String {
+/// Parses raw command input that may contain CLI-style spaces, commas, or inline parameters,
+/// producing a canonical RouterOS path and extracting any inline attributes, query filters, or proplists.
+pub fn parse_command_input(
+    raw: &str,
+) -> (String, HashMap<String, String>, Vec<String>, Vec<String>) {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return "/".to_string();
+        return ("/".to_string(), HashMap::new(), Vec::new(), Vec::new());
     }
 
-    let replaced = trimmed.replace(',', "/");
-    let parts: Vec<&str> = replaced
-        .split('/')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
+    let mut path_tokens = Vec::new();
+    let mut attributes = HashMap::new();
+    let mut query = Vec::new();
+    let mut proplist = Vec::new();
 
-    if parts.is_empty() {
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+
+    for token in tokens {
+        // Query filter: ?key=val or ?#|
+        if let Some(q) = token.strip_prefix('?') {
+            query.push(q.to_string());
+        }
+        // Inline proplist: .proplist=name,type or =.proplist=name,type
+        else if let Some(stripped) = token
+            .strip_prefix(".proplist=")
+            .or_else(|| token.strip_prefix("=.proplist="))
+        {
+            for p in stripped.split(',') {
+                let p_trim = p.trim();
+                if !p_trim.is_empty() {
+                    proplist.push(p_trim.to_string());
+                }
+            }
+        }
+        // Inline attributes: key=val or =key=val (not starting with /)
+        else if token.contains('=') && !token.starts_with('/') {
+            let clean = token.trim_start_matches('=');
+            if let Some((k, v)) = clean.split_once('=') {
+                attributes.insert(k.to_string(), v.to_string());
+            }
+        }
+        // CLI display modifiers or "where" following "print"
+        else if path_tokens.last().copied() == Some("print")
+            && (matches!(
+                token.to_ascii_lowercase().as_str(),
+                "detail" | "brief" | "terse" | "without-paging"
+            ) || token.eq_ignore_ascii_case("where"))
+        {
+            continue;
+        }
+        // Path segments (may contain slashes, commas)
+        else {
+            for part in token.split(['/', ',']) {
+                let p = part.trim();
+                if !p.is_empty() {
+                    path_tokens.push(p);
+                }
+            }
+        }
+    }
+
+    let normalized_path = if path_tokens.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}", parts.join("/"))
-    }
+        format!("/{}", path_tokens.join("/"))
+    };
+
+    (normalized_path, attributes, query, proplist)
+}
+
+/// Normalizes raw command paths like "ip,address,print", "/ip/address print detail",
+/// or "/ip dhcp-server print" to canonical RouterOS API paths like "/ip/address/print".
+pub fn normalize_command_path(raw: &str) -> String {
+    parse_command_input(raw).0
 }
 
 #[cfg(test)]
@@ -226,6 +282,41 @@ mod tests {
             "/system/resource/print"
         );
         assert_eq!(normalize_command_path(""), "/");
+
+        // CLI space normalization and modifier stripping
+        assert_eq!(
+            normalize_command_path("/ip/address print detail"),
+            "/ip/address/print"
+        );
+        assert_eq!(
+            normalize_command_path("/ip/dhcp-server print"),
+            "/ip/dhcp-server/print"
+        );
+        assert_eq!(
+            normalize_command_path("/ip dhcp-server print"),
+            "/ip/dhcp-server/print"
+        );
+        assert_eq!(
+            normalize_command_path("ip address print"),
+            "/ip/address/print"
+        );
+        assert_eq!(
+            normalize_command_path("/interface print terse without-paging"),
+            "/interface/print"
+        );
+    }
+
+    #[test]
+    fn test_parse_command_input_inline_attrs_and_queries() {
+        let cmd =
+            UncheckedCommand::new("/ip/firewall/filter print where chain=forward ?disabled=false");
+        assert_eq!(cmd.path, "/ip/firewall/filter/print");
+        assert_eq!(cmd.attributes.get("chain"), Some(&"forward".to_string()));
+        assert_eq!(cmd.query, vec!["disabled=false".to_string()]);
+
+        let cmd2 = UncheckedCommand::new("/interface print .proplist=name,type,running");
+        assert_eq!(cmd2.path, "/interface/print");
+        assert_eq!(cmd2.proplist, vec!["name", "type", "running"]);
     }
 
     #[test]

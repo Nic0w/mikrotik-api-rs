@@ -41,7 +41,7 @@ pub enum TaskAction {
 /// Arguments for `routeros_exec` tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct ExecArgs {
-    /// Full RouterOS command path (e.g. "/ip/address/print", "/ping", "/log/listen").
+    /// Full RouterOS command path (e.g. "/ip/address/print", "/ip/dhcp-server/print", "/ping", "/log/listen").
     #[serde(default)]
     pub command: Option<String>,
     /// Key-value command attributes (e.g. {"address": "1.1.1.1", "count": "4"}).
@@ -135,22 +135,42 @@ impl MkMcpServer {
 
         // 1. Identity
         let id_cmd = UncheckedCommand::new("/system/identity/print");
-        if let Ok(auth) = self.safety.authorize(id_cmd) {
-            if let Ok(rows) = self.driver.execute(auth).await {
+        let id_auth = match self.safety.authorize(id_cmd) {
+            Ok(auth) => auth,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                    "Safety authorization failed for identity: {e:?}"
+                ))]));
+            }
+        };
+        match self.driver.execute(id_auth).await {
+            Ok(rows) => {
                 if let Some(first) = rows.first() {
                     if let Some(name) = first.get("name") {
                         identity = name.clone();
                     }
                 }
             }
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                    "Failed to connect or query router identity: {e}"
+                ))]));
+            }
         }
 
         // 2. Resources
         let res_cmd = UncheckedCommand::new("/system/resource/print");
         if let Ok(auth) = self.safety.authorize(res_cmd) {
-            if let Ok(rows) = self.driver.execute(auth).await {
-                if let Some(first) = rows.into_iter().next() {
-                    resources = first;
+            match self.driver.execute(auth).await {
+                Ok(rows) => {
+                    if let Some(first) = rows.into_iter().next() {
+                        resources = first;
+                    }
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                        "Failed to query system resources: {e}"
+                    ))]));
                 }
             }
         }
@@ -167,8 +187,13 @@ impl MkMcpServer {
             "comment".into(),
         ];
         if let Ok(auth) = self.safety.authorize(iface_cmd) {
-            if let Ok(rows) = self.driver.execute(auth).await {
-                interfaces = rows;
+            match self.driver.execute(auth).await {
+                Ok(rows) => interfaces = rows,
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                        "Failed to query interfaces: {e}"
+                    ))]));
+                }
             }
         }
 
@@ -182,8 +207,13 @@ impl MkMcpServer {
             "dynamic".into(),
         ];
         if let Ok(auth) = self.safety.authorize(ip_cmd) {
-            if let Ok(rows) = self.driver.execute(auth).await {
-                ip_addresses = rows;
+            match self.driver.execute(auth).await {
+                Ok(rows) => ip_addresses = rows,
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                        "Failed to query IP addresses: {e}"
+                    ))]));
+                }
             }
         }
 
@@ -319,7 +349,7 @@ impl MkMcpServer {
 
     /// Execute a RouterOS API command (query, diagnostic, mutation, or streaming task).
     #[tool(
-        description = "Execute a RouterOS command. Can execute queries (/ip/address/print), action commands (/ping), mutations, or manage background streaming tasks (/log/listen)."
+        description = "Execute a RouterOS command. Commands should be slash-delimited ending in a command verb (e.g. '/ip/address/print', '/ip/dhcp-server/print', '/ip/firewall/nat/print', '/ping'). Note: Data queries use the 'print' verb; display modifiers like 'detail' are unnecessary."
     )]
     pub async fn routeros_exec(
         &self,
@@ -367,9 +397,9 @@ impl MkMcpServer {
         };
 
         let mut unchecked = UncheckedCommand::new(&command_path);
-        unchecked.attributes = args.attributes;
-        unchecked.query = args.query;
-        unchecked.proplist = args.proplist;
+        unchecked.attributes.extend(args.attributes);
+        unchecked.query.extend(args.query);
+        unchecked.proplist.extend(args.proplist);
         if args.as_task {
             unchecked.is_streaming = true;
         }

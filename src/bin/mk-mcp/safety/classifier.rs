@@ -61,12 +61,19 @@ impl Classifier for RuleClassifier {
                 }
             }
             // Fail-closed on unrecognized or custom command verbs
-            _ => Classification {
-                class: SafetyClass::DangerousWrite,
-                reason: Some(format!(
-                    "Unrecognized or privileged command verb '{verb}' (fail-closed)"
-                )),
-            },
+            _ => {
+                let hint = if verb.contains(' ') {
+                    " (Note: command paths should be slash-delimited, e.g. '/ip/address/print')"
+                } else {
+                    ""
+                };
+                Classification {
+                    class: SafetyClass::DangerousWrite,
+                    reason: Some(format!(
+                        "Unrecognized or privileged command verb '{verb}' (fail-closed){hint}"
+                    )),
+                }
+            }
         }
     }
 }
