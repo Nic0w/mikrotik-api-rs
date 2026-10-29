@@ -20,38 +20,53 @@ This document serves as the primary technical reference for AI agents and human 
 
 ```
 mikrotik-api-rs/
-├── Cargo.toml                  # Workspace dependencies & package metadata
-├── Cargo.lock                  # Dependency lockfile
+├── Cargo.toml                  # Virtual workspace root manifest
+├── Cargo.lock                  # Workspace dependency lockfile
 ├── README.md                   # Public documentation & usage examples
 ├── LICENSE                     # GPL-3.0 license
 ├── .cargo/
 │   └── config.toml             # Cross-compilation target linker configuration
-└── src/
-    ├── lib.rs                  # Library entrypoint, public exports, connect()
-    ├── bin/
-    │   └── mk-client/          # CLI executable (`mk-client`)
+└── crates/
+    ├── mikrotik-api/           # Core library crate (`mikrotik_api`)
+    │   ├── Cargo.toml
+    │   ├── src/
+    │   │   ├── lib.rs          # Library entrypoint, public exports, connect()
+    │   │   └── api/
+    │   │       ├── mod.rs      # MikrotikAPI struct, state machine, sentence encoding
+    │   │       ├── error.rs    # Top-level library Error enum
+    │   │       ├── listener.rs # Background TCP read event loop & sentence demux
+    │   │       ├── tls.rs      # SSL/TLS configuration, verifiers & tokio-rustls connection
+    │   │       ├── read.rs     # Length-prefixed word reading & zero-copy parsing
+    │   │       ├── call/       # Async call handlers & future/stream implementations
+    │   │       │   ├── mod.rs      # AsyncCall trait & InnerCall abstraction
+    │   │       │   ├── one_shot.rs # OneShotCall<T> (single reply future)
+    │   │       │   ├── array.rs    # ArrayListCall<T> (multi-reply vector future)
+    │   │       │   └── streaming.rs# StreamingCall<T> (infinite event stream)
+    │   │       ├── model/      # Data models (Response, TrapCategory, SystemResources, Interface, etc.)
+    │   │       └── de/         # SentenceDeserializer (serde::Deserializer implementation)
+    │   └── tests/
+    │       └── functional.rs   # RouterOS live integration tests
+    ├── mk-client/              # CLI executable (`mk-client`)
+    │   ├── Cargo.toml
+    │   └── src/
     │       ├── main.rs         # CLI entrypoint, argument dispatching
     │       ├── config.rs       # Clap CLI argument and subcommand structs
     │       ├── identify.rs     # Handler for `identify` subcommand
     │       └── custom.rs       # Handler for `custom` arbitrary command invocation
-    └── api/
-        ├── mod.rs              # MikrotikAPI struct, state machine, sentence encoding
-        ├── error.rs            # Top-level library Error enum
-        ├── listener.rs         # Background TCP read event loop & sentence demux
-        ├── tls.rs              # SSL/TLS configuration, verifiers & tokio-rustls connection
-        ├── read.rs             # Length-prefixed word reading & zero-copy parsing
-        ├── call/               # Async call handlers & future/stream implementations
-        │   ├── mod.rs          # AsyncCall trait & InnerCall abstraction
-        │   ├── one_shot.rs     # OneShotCall<T> (single reply future)
-        │   ├── array.rs        # ArrayListCall<T> (multi-reply vector future)
-        │   └── streaming.rs    # StreamingCall<T> (infinite event stream)
-        ├── model/
-        │   └── mod.rs          # Data models (Response, TrapCategory, SystemResources, Interface, etc.)
-        ├── de/
-        │   ├── mod.rs          # SentenceDeserializer (serde::Deserializer implementation)
-        │   └── error.rs        # DeserializerError enum
-        └── blocking/           # [DEAD CODE / UNWIRED]
-            └── de.rs           # Abandoned prototype blocking deserializer (do NOT import or rely on)
+    ├── mk-mcp/                 # Model Context Protocol (MCP) server (`mk-mcp`)
+    │   ├── Cargo.toml
+    │   ├── src/
+    │   │   ├── main.rs         # MCP CLI entrypoint and stdio transport loop
+    │   │   ├── mcp.rs          # MCP handler and tool declarations
+    │   │   ├── mock_test.rs    # Mock unit tests for MCP tools
+    │   │   ├── router/         # Connection management and background streaming tasks
+    │   │   └── safety/         # EBNF grammar, classifier, policy gating
+    │   └── tests/
+    │       └── mcp_functional.rs # CLI end-to-end tests
+    └── tree-extractor/         # Firmware command tree inspection utility (`publish = false`)
+        ├── Cargo.toml
+        └── src/
+            └── main.rs
 ```
 
 ---

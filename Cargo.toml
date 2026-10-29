@@ -1,72 +1,49 @@
-[package]
-name = "mikrotik_api"
-description = "Rust library & minimal client to connect and interact with Mikrotik RouterOS API, usually exposed on port 8728"
-categories = ["api-bindings", "asynchronous", "command-line-utilities"]
-keywords = ["mikrotik", "routeros", "api", "async", "cli"]
-version = "0.5.0"
-edition = "2021"
-license-file = "LICENSE"
-readme = "README.md"
-repository = "https://github.com/Nic0w/mikrotik-api-rs"
-homepage = "https://github.com/Nic0w/mikrotik-api-rs"
-exclude = [".gitea", "AGENTS.md"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+    "crates/mikrotik-api",
+    "crates/mk-client",
+    "crates/mk-mcp",
+    "crates/tree-extractor",
+]
+resolver = "2"
 
 [profile.release]
 lto = true
 strip = true
 
-[[bin]]
-name = "mk-client"
-path = "src/bin/mk-client/main.rs"
-required-features = ["cli"]
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+license = "GPL-3.0-only"
+license-file = "LICENSE"
+repository = "https://github.com/Nic0w/mikrotik-api-rs"
+homepage = "https://github.com/Nic0w/mikrotik-api-rs"
+readme = "README.md"
 
-[[bin]]
-name = "tree-extractor"
-path = "src/bin/tree-extractor/main.rs"
-required-features = ["cli"]
+[workspace.dependencies]
+# Internal workspace crates
+mikrotik_api = { path = "crates/mikrotik-api", version = "0.5.0" }
 
-[[bin]]
-name = "mk-mcp"
-path = "src/bin/mk-mcp/main.rs"
-required-features = ["mcp"]
-
-[dependencies]
+# Shared core dependencies
 bytes = "1.12.1"
 tokio = { version = "1.54.1", features = ["full"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 log = "0.4.34"
 futures = "0.3.34"
-simple_logger = { version = "5.2.0", features = ["stderr"], optional = true }
-clap = { version = "4.6.7", features = ["derive", "env"], optional = true }
-human_bytes = { version = "0.4.3", optional = true }
-dialoguer = { version = "0.12.0", optional = true }
-serde_json = { version = "1.0.154", optional = true }
-rmcp = { version = "3.8.0", features = ["macros", "server", "transport-io"], optional = true }
-schemars = { version = "1.2", optional = true }
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"], optional = true }
-rustls-pki-types = { version = "1", optional = true }
-rustls-native-certs = { version = "0.8", optional = true }
-webpki-roots = { version = "1.0", optional = true }
 
-[features]
-default = ["tls", "cli"]
-tls = [
-    "dep:tokio-rustls",
-    "dep:rustls-pki-types",
-    "dep:rustls-native-certs",
-    "dep:webpki-roots",
-]
-cli = [
-    "dep:clap",
-    "dep:dialoguer",
-    "dep:simple_logger",
-    "dep:human_bytes",
-    "dep:serde_json",
-]
-mcp = [
-    "cli",
-    "dep:rmcp",
-    "dep:schemars",
-]
+# TLS dependencies
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+rustls-pki-types = "1"
+rustls-native-certs = "0.8"
+webpki-roots = "1.0"
+
+# CLI dependencies
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dialoguer = "0.12.0"
+simple_logger = { version = "5.2.0", features = ["stderr"] }
+human_bytes = "0.4.3"
+
+# MCP dependencies
+rmcp = { version = "3.8.0", features = ["macros", "server", "transport-io"] }
+schemars = "1.2"

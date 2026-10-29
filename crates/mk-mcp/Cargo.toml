@@ -1,0 +1,29 @@
+[package]
+name = "mk-mcp"
+description = "Model Context Protocol (MCP) server for Mikrotik RouterOS"
+categories = ["command-line-utilities"]
+keywords = ["mikrotik", "routeros", "api", "mcp"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+mikrotik_api = { workspace = true, features = ["tls"] }
+clap.workspace = true
+dialoguer.workspace = true
+simple_logger.workspace = true
+tokio.workspace = true
+log.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+
+[features]
+default = ["tls", "mcp"]
+tls = ["mikrotik_api/tls"]
+mcp = []

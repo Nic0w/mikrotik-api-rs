@@ -1,0 +1,17 @@
+[package]
+name = "tree-extractor"
+description = "Extract and inspect the complete RouterOS CLI command hierarchy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+mikrotik_api = { workspace = true, features = ["tls"] }
+clap.workspace = true
+dialoguer.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -525,18 +525,11 @@ name = "mikrotik_api"
 version = "0.5.0"
 dependencies = [
  "bytes",
- "clap",
- "dialoguer",
  "futures",
- "human_bytes",
  "log",
- "rmcp",
  "rustls-native-certs",
  "rustls-pki-types",
- "schemars",
  "serde",
- "serde_json",
- "simple_logger",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
@@ -551,6 +544,38 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mk-client"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "dialoguer",
+ "futures",
+ "human_bytes",
+ "log",
+ "mikrotik_api",
+ "serde",
+ "simple_logger",
+ "tokio",
+]
+
+[[package]]
+name = "mk-mcp"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "dialoguer",
+ "futures",
+ "log",
+ "mikrotik_api",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "simple_logger",
+ "tokio",
 ]
 
 [[package]]
@@ -1160,6 +1185,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "tree-extractor"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "dialoguer",
+ "mikrotik_api",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

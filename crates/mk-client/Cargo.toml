@@ -1,0 +1,26 @@
+[package]
+name = "mk-client"
+description = "Command-line client for Mikrotik RouterOS API"
+categories = ["command-line-utilities"]
+keywords = ["mikrotik", "routeros", "api", "cli"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+mikrotik_api = { workspace = true, features = ["tls"] }
+clap.workspace = true
+dialoguer.workspace = true
+simple_logger.workspace = true
+human_bytes.workspace = true
+tokio.workspace = true
+log.workspace = true
+futures.workspace = true
+serde.workspace = true
+
+[features]
+default = ["tls"]
+tls = ["mikrotik_api/tls"]
