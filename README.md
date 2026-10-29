@@ -164,7 +164,58 @@ $ target/release/mk-client -A 192.168.88.1 --ssl -k -L admin -P "P@ssw0rd" custo
 
 ```
 
- # DISCLAIMER
+## The MCP Server (`mk-mcp`)
+
+`mk-mcp` is a Model Context Protocol (MCP) server that provides AI assistants (such as Claude Desktop, Antigravity, or Cursor) with native, structured, progressive-disclosure access to your MikroTik router over the RouterOS API.
+
+### Key Features
+- **Context-Efficient Triad**: Rather than bloating prompt contexts with 100+ static tools, `mk-mcp` provides **3 core tools** (< 400 prompt tokens total):
+  - `get_overview`: Fast 1-turn baseline summary (identity, resources, interfaces, IP addresses).
+  - `routeros_inspect`: Dynamic syntax and argument discovery directly from the running router via `/console/inspect`.
+  - `routeros_exec`: Universal execution engine for queries, action commands, mutations, and streaming background tasks.
+- **Safety Gatekeeper**: Enforces a 4-quadrant command classifier (`SafeRead`, `DangerousRead`, `SafeWrite`, `DangerousWrite`) with compile-time capability tokens.
+- **Streaming Tasks**: Real-time RouterOS streams (`/log/listen`, `/interface/listen`) are surfaced as background tasks via the MCP Tasks extension with automatic tag cancellation.
+
+### Configuration (`mcpSettings.json`)
+
+Add `mk-mcp` to your MCP client configuration (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "mikrotik": {
+      "command": "/path/to/mk-mcp",
+      "args": [
+        "--address", "192.168.88.1:8728",
+        "--login", "admin",
+        "--password", "your-password",
+        "--policy", "read-only"
+      ]
+    }
+  }
+}
+```
+
+Or via environment variables:
+```json
+{
+  "mcpServers": {
+    "mikrotik": {
+      "command": "/path/to/mk-mcp",
+      "env": {
+        "MIKROTIK_ADDR": "192.168.88.1:8729",
+        "MIKROTIK_USER": "admin",
+        "MIKROTIK_PASS": "your-password",
+        "MIKROTIK_SSL": "true",
+        "MIKROTIK_INSECURE": "true",
+        "MIKROTIK_MCP_POLICY": "confirm-writes"
+      }
+    }
+  }
+}
+```
+
+# DISCLAIMER
 
  This software is provided as-is, without any warranty. I am not in any way affiliated with Mikrotik and I am not responsible of any damage that you may cause to your router while using this software.
 
