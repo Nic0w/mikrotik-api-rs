@@ -5,3 +5,8 @@
 *.crt
 *.pem
 .env
+/firmware/
+/docs/
+*.md
+!README.md
+!AGENTS.md
