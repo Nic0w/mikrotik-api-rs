@@ -219,6 +219,19 @@ mod tests {
                         let done = encode_sentence(&["!done", &tag_word]);
                         let _ = server_io.write_all(&done).await;
                     }
+                    "/ip/firewall/filter/add" => {
+                        // Echo back received attributes inside !re so the test can assert them
+                        let mut reply_words: Vec<&str> = vec!["!re", &tag_word, "=ret=*1337"];
+                        for w in &words[1..] {
+                            if !w.starts_with(".tag=") {
+                                reply_words.push(w.as_str());
+                            }
+                        }
+                        let re = encode_sentence(&reply_words);
+                        let done = encode_sentence(&["!done", &tag_word]);
+                        let _ = server_io.write_all(&re).await;
+                        let _ = server_io.write_all(&done).await;
+                    }
                     other => {
                         let trap = encode_sentence(&[
                             "!trap",
@@ -470,5 +483,40 @@ mod tests {
         let json_text = serde_json::to_string(&result.content).unwrap();
         assert!(json_text.contains("Failed to connect or query router identity"));
         assert!(json_text.contains("Connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_exec_firewall_add_with_quoted_comment() {
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadWrite, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = ExecArgs {
+            command: Some(
+                r#"/ip/firewall/filter/add action=accept chain=input dst-port=1337 protocol=tcp connection-state=new comment="Allow incoming IPv4 traffic on port 1337" log=yes priority=1"#
+                    .into(),
+            ),
+            attributes: Default::default(),
+            query: Default::default(),
+            proplist: Default::default(),
+            as_task: false,
+            task_id: None,
+            task_action: None,
+        };
+
+        let result = server
+            .routeros_exec(Parameters(args))
+            .await
+            .expect("exec succeeds");
+        assert_ne!(result.is_error, Some(true));
+
+        let json_text = serde_json::to_string(&result.content).unwrap();
+        assert!(json_text.contains("Allow incoming IPv4 traffic on port 1337"));
+        assert!(json_text.contains("1337"));
+        assert!(json_text.contains("accept"));
     }
 }

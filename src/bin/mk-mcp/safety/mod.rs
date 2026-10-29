@@ -1,9 +1,11 @@
 pub mod classifier;
+pub mod grammar;
 
 use std::collections::HashMap;
 
 use clap::ValueEnum;
 pub use classifier::{Classification, Classifier, RuleClassifier};
+pub use grammar::{parse_command_line, ParsedCommand};
 use serde::Serialize;
 
 /// The four safety quadrants every command is categorized into.
@@ -45,20 +47,23 @@ pub struct UncheckedCommand {
     pub proplist: Vec<String>,
     /// Whether this is a streaming command (e.g. /log/listen).
     pub is_streaming: bool,
+    /// Optional grammar/structural error detected during command parsing.
+    pub parse_error: Option<String>,
 }
 
 impl UncheckedCommand {
-    /// Creates a new `UncheckedCommand` normalizing comma-separated, missing-slash,
-    /// or CLI-style space-separated paths and extracting any inline attributes or queries.
+    /// Creates a new `UncheckedCommand` using the formal RouterOS EBNF grammar parser,
+    /// normalizing paths and extracting any inline attributes, quoted strings, or queries.
     pub fn new(raw_path: &str) -> Self {
-        let (normalized, attributes, query, proplist) = parse_command_input(raw_path);
-        let is_streaming = normalized.ends_with("/listen");
+        let parsed = parse_command_line(raw_path);
+        let is_streaming = parsed.path.ends_with("/listen");
         Self {
-            path: normalized,
-            attributes,
-            query,
-            proplist,
+            path: parsed.path,
+            attributes: parsed.attributes,
+            query: parsed.query,
+            proplist: parsed.proplist,
             is_streaming,
+            parse_error: parsed.parse_error,
         }
     }
 }
@@ -183,80 +188,10 @@ impl<C: Classifier> SafetyGate<C> {
     }
 }
 
-/// Parses raw command input that may contain CLI-style spaces, commas, or inline parameters,
-/// producing a canonical RouterOS path and extracting any inline attributes, query filters, or proplists.
-pub fn parse_command_input(
-    raw: &str,
-) -> (String, HashMap<String, String>, Vec<String>, Vec<String>) {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return ("/".to_string(), HashMap::new(), Vec::new(), Vec::new());
-    }
-
-    let mut path_tokens = Vec::new();
-    let mut attributes = HashMap::new();
-    let mut query = Vec::new();
-    let mut proplist = Vec::new();
-
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-
-    for token in tokens {
-        // Query filter: ?key=val or ?#|
-        if let Some(q) = token.strip_prefix('?') {
-            query.push(q.to_string());
-        }
-        // Inline proplist: .proplist=name,type or =.proplist=name,type
-        else if let Some(stripped) = token
-            .strip_prefix(".proplist=")
-            .or_else(|| token.strip_prefix("=.proplist="))
-        {
-            for p in stripped.split(',') {
-                let p_trim = p.trim();
-                if !p_trim.is_empty() {
-                    proplist.push(p_trim.to_string());
-                }
-            }
-        }
-        // Inline attributes: key=val or =key=val (not starting with /)
-        else if token.contains('=') && !token.starts_with('/') {
-            let clean = token.trim_start_matches('=');
-            if let Some((k, v)) = clean.split_once('=') {
-                attributes.insert(k.to_string(), v.to_string());
-            }
-        }
-        // CLI display modifiers or "where" following "print"
-        else if path_tokens.last().copied() == Some("print")
-            && (matches!(
-                token.to_ascii_lowercase().as_str(),
-                "detail" | "brief" | "terse" | "without-paging"
-            ) || token.eq_ignore_ascii_case("where"))
-        {
-            continue;
-        }
-        // Path segments (may contain slashes, commas)
-        else {
-            for part in token.split(['/', ',']) {
-                let p = part.trim();
-                if !p.is_empty() {
-                    path_tokens.push(p);
-                }
-            }
-        }
-    }
-
-    let normalized_path = if path_tokens.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", path_tokens.join("/"))
-    };
-
-    (normalized_path, attributes, query, proplist)
-}
-
 /// Normalizes raw command paths like "ip,address,print", "/ip/address print detail",
 /// or "/ip dhcp-server print" to canonical RouterOS API paths like "/ip/address/print".
 pub fn normalize_command_path(raw: &str) -> String {
-    parse_command_input(raw).0
+    parse_command_line(raw).path
 }
 
 #[cfg(test)]
@@ -311,12 +246,28 @@ mod tests {
         let cmd =
             UncheckedCommand::new("/ip/firewall/filter print where chain=forward ?disabled=false");
         assert_eq!(cmd.path, "/ip/firewall/filter/print");
-        assert_eq!(cmd.attributes.get("chain"), Some(&"forward".to_string()));
-        assert_eq!(cmd.query, vec!["disabled=false".to_string()]);
+        assert_eq!(
+            cmd.query,
+            vec!["chain=forward".to_string(), "disabled=false".to_string()]
+        );
 
         let cmd2 = UncheckedCommand::new("/interface print .proplist=name,type,running");
         assert_eq!(cmd2.path, "/interface/print");
         assert_eq!(cmd2.proplist, vec!["name", "type", "running"]);
+
+        let cmd3 = UncheckedCommand::new(
+            r#"/ip/firewall/filter/add action=accept chain=input dst-port=1337 protocol=tcp connection-state=new comment="Allow incoming IPv4 traffic on port 1337" log=yes priority=1"#,
+        );
+        assert_eq!(cmd3.path, "/ip/firewall/filter/add");
+        assert_eq!(
+            cmd3.attributes.get("comment").map(String::as_str),
+            Some("Allow incoming IPv4 traffic on port 1337")
+        );
+        assert_eq!(cmd3.attributes.get("log").map(String::as_str), Some("yes"));
+        assert_eq!(
+            cmd3.attributes.get("priority").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]

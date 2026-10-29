@@ -23,6 +23,14 @@ pub struct RuleClassifier;
 
 impl Classifier for RuleClassifier {
     fn classify(&self, cmd: &UncheckedCommand) -> Classification {
+        // 0. Grammar / structural validation check (fail-closed)
+        if let Some(err) = &cmd.parse_error {
+            return Classification {
+                class: SafetyClass::DangerousWrite,
+                reason: Some(format!("Command syntax rejected (fail-closed): {err}")),
+            };
+        }
+
         let path = cmd.path.as_str();
         let verb = path.rsplit('/').next().unwrap_or("");
 
@@ -54,12 +62,11 @@ impl Classifier for RuleClassifier {
                 class: SafetyClass::SafeRead,
                 reason: None,
             },
-            "add" | "set" | "remove" | "enable" | "disable" | "comment" | "unset" => {
-                Classification {
-                    class: SafetyClass::SafeWrite,
-                    reason: None,
-                }
-            }
+            "add" | "set" | "remove" | "enable" | "disable" | "comment" | "unset" | "move"
+            | "reset-counters" | "reset-counters-all" => Classification {
+                class: SafetyClass::SafeWrite,
+                reason: None,
+            },
             // Fail-closed on unrecognized or custom command verbs
             _ => {
                 let hint = if verb.contains(' ') {
@@ -207,6 +214,14 @@ mod tests {
 
         let cmd = UncheckedCommand::new("/interface/ethernet/set");
         assert_eq!(classifier.classify(&cmd).class, SafetyClass::SafeWrite);
+
+        let cmd_with_quoted_comment = UncheckedCommand::new(
+            r#"/ip/firewall/filter/add action=accept chain=input dst-port=1337 protocol=tcp connection-state=new comment="Allow incoming IPv4 traffic on port 1337" log=yes priority=1"#,
+        );
+        assert_eq!(
+            classifier.classify(&cmd_with_quoted_comment).class,
+            SafetyClass::SafeWrite
+        );
     }
 
     #[test]
@@ -227,5 +242,11 @@ mod tests {
 
         let cmd = UncheckedCommand::new("/system/arbitrary-unknown-verb");
         assert_eq!(classifier.classify(&cmd).class, SafetyClass::DangerousWrite);
+
+        let multi_stmt = UncheckedCommand::new("/interface/print ; /system/reboot");
+        assert_eq!(
+            classifier.classify(&multi_stmt).class,
+            SafetyClass::DangerousWrite
+        );
     }
 }
