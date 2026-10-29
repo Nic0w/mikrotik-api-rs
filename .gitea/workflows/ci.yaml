@@ -38,13 +38,13 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run Clippy linter
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets --all-features
 
       - name: Build all targets (debug)
-        run: cargo build --all-targets --locked
+        run: cargo build --all-targets --all-features --locked
 
       - name: Build release binaries
-        run: cargo build --release --locked
+        run: cargo build --release --all-features --locked
 
       - name: Upload mk-client release binary
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
@@ -52,6 +52,13 @@ jobs:
         with:
           name: mk-client
           path: target/release/mk-client
+
+      - name: Upload mk-mcp release binary
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v3-node20
+        with:
+          name: mk-mcp
+          path: target/release/mk-mcp
 
   unit-test:
     name: Unit Tests
@@ -75,7 +82,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run unit and documentation tests
-        run: cargo test --locked
+        run: cargo test --all-features --locked
 
   functional-test:
     name: Functional Tests (RouterOS)

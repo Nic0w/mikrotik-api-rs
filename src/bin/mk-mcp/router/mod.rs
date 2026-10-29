@@ -133,7 +133,7 @@ impl RouterDriver {
                 *guard = None;
                 // Auto-reconnect once if the command is idempotent (SafeRead)
                 if cmd.class() == SafetyClass::SafeRead {
-                    let mut fresh_api = self.connector.connect().await?;
+                    let fresh_api = self.connector.connect().await?;
                     let res = fresh_api.generic_array_call::<Row>(cmd.path(), attrs).await;
                     *guard = Some(fresh_api);
                     res
