@@ -1191,4 +1191,69 @@ mod tests {
             .expect("expected attributed !done to deserialize into HashMap");
         assert_eq!(map.get("ret").map(String::as_str), Some("*1A"));
     }
+
+    #[test]
+    fn test_deserialize_trap_edge_cases() {
+        // 1. Omitted =message= attribute
+        let no_message = vec![
+            "!trap".to_string(),
+            "=category=2".to_string(),
+            ".tag=1".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<()>(&no_message).expect("trap without message should succeed"),
+            Response::Trap {
+                category: Some(TrapCategory::CommandExecutionInterrupted),
+                message: String::new(),
+            }
+        );
+
+        // 2. Omitted =category= attribute
+        let no_category = vec![
+            "!trap".to_string(),
+            ".tag=1".to_string(),
+            "=message=no such item".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<()>(&no_category).expect("trap without category should succeed"),
+            Response::Trap {
+                category: None,
+                message: "no such item".to_string(),
+            }
+        );
+
+        // 3. Empty =category= attribute
+        let empty_category = vec![
+            "!trap".to_string(),
+            "=category=".to_string(),
+            "=message=script failed".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<()>(&empty_category)
+                .expect("trap with empty category should succeed"),
+            Response::Trap {
+                category: None,
+                message: "script failed".to_string(),
+            }
+        );
+
+        // 4. Unknown category code > 7
+        let unknown_category = vec![
+            "!trap".to_string(),
+            "=category=99".to_string(),
+            "=message=custom error".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<()>(&unknown_category)
+                .expect("trap with unknown category should map to Other"),
+            Response::Trap {
+                category: Some(TrapCategory::Other(99)),
+                message: "custom error".to_string(),
+            }
+        );
+    }
 }
