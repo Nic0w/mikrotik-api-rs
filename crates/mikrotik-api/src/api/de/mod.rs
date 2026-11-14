@@ -47,13 +47,15 @@ pub fn deserialize_done_payload<T: de::DeserializeOwned>(sentence: &[String]) ->
         _ => sentence,
     };
 
-    let mut iterator = if has_done_attributes(sentence) {
+    let has_attrs = has_done_attributes(sentence);
+    let mut iterator = if has_attrs {
         words.iter()
     } else {
         [].iter()
     };
 
     let mut deserializer = SentenceDeserializer::new(&mut iterator);
+    deserializer.bare_done = !has_attrs;
 
     T::deserialize(&mut deserializer)
 }
@@ -64,6 +66,7 @@ pub struct SentenceDeserializer<'de> {
     current_word: Option<&'de str>,
     current_key: Option<&'de str>,
     current_value: Option<&'de str>,
+    bare_done: bool,
 }
 
 impl<'de> SentenceDeserializer<'de> {
@@ -75,6 +78,7 @@ impl<'de> SentenceDeserializer<'de> {
             current_word: None,
             current_key: None,
             current_value: None,
+            bare_done: false,
         }
     }
 
@@ -139,7 +143,15 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_str(visitor)
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
+        if self.current_key.is_some() || self.current_value.is_some() {
+            self.deserialize_str(visitor)
+        } else {
+            self.deserialize_map(visitor)
+        }
     }
 
     fn deserialize_struct<V>(
@@ -151,6 +163,10 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
         visitor.visit_map(StructVisitor { de: self })
     }
 
@@ -221,6 +237,8 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        let _ = self.current_key.take();
+        let _ = self.current_value.take();
         visitor.visit_unit()
     }
 
@@ -343,6 +361,10 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
         if self.current_word.is_none()
             && self.current_key.is_none()
             && self.current_value.is_none()
@@ -363,6 +385,10 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
         visitor.visit_map(StructVisitor { de: self })
     }
 
@@ -391,7 +417,11 @@ impl<'de, 'v> MapAccess<'de> for StructVisitor<'v, 'de> {
     where
         K: serde::de::DeserializeSeed<'de>,
     {
-        let word = self.de.read_word()?;
+        let word = match self.de.read_word() {
+            Ok(word) => word,
+            Err(DeserializerError::MissingWord) => return Ok(None),
+            Err(e) => return Err(e),
+        };
 
         if word.is_empty() {
             return Ok(None);
@@ -426,7 +456,7 @@ impl<'de, 'v> EnumAccess<'de> for EnumVisitor<'v, 'de> {
         let val = seed.deserialize(&mut *self.de)?;
 
         // Parse the colon separating map key from value.
-        if self.de.current_word.is_some() {
+        if self.de.current_word.take().is_some() {
             Ok((val, self))
         } else {
             Err(DeserializerError::MissingWord)
@@ -452,7 +482,9 @@ impl<'de, 'v> VariantAccess<'de> for EnumVisitor<'v, 'de> {
     where
         V: Visitor<'de>,
     {
-        todo!("EnumVisitor::tuple_variant")
+        Err(de::Error::custom(
+            "tuple variants are not supported in RouterOS sentence protocol",
+        ))
     }
 
     fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
