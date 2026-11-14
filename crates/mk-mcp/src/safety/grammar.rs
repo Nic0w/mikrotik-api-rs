@@ -404,6 +404,8 @@ fn is_item_target_verb(verb: &str) -> bool {
             | "enable"
             | "disable"
             | "comment"
+            | "unset"
+            | "move"
             | "reset"
             | "reset-counters"
             | "get"
@@ -920,5 +922,207 @@ mod tests {
     fn test_unterminated_quote_returns_parse_error() {
         let bad = parse_command_line(r#"/ip/firewall/filter/add comment="unterminated"#);
         assert!(bad.parse_error.is_some());
+    }
+
+    #[test]
+    fn test_empty_and_whitespace_input() {
+        let empty = parse_command_line("");
+        assert_eq!(empty.parse_error, None);
+        assert_eq!(empty.path, "/");
+        assert!(empty.attributes.is_empty());
+
+        let ws = parse_command_line("   \t\n  ");
+        assert_eq!(ws.parse_error, None);
+        assert_eq!(ws.path, "/");
+    }
+
+    #[test]
+    fn test_line_continuations_outside_and_inside_strings() {
+        // Outside strings: backslash + \n and backslash + \r\n join lines
+        let joined_lf =
+            parse_command_line("/ip/address/add \\\naddress=10.0.0.1/24 interface=ether1");
+        assert_eq!(joined_lf.parse_error, None);
+        assert_eq!(joined_lf.path, "/ip/address/add");
+        assert_eq!(
+            joined_lf.attributes.get("address").map(String::as_str),
+            Some("10.0.0.1/24")
+        );
+        assert_eq!(
+            joined_lf.attributes.get("interface").map(String::as_str),
+            Some("ether1")
+        );
+
+        let joined_crlf = parse_command_line("/interface/print \\\r\ncount-only");
+        assert_eq!(joined_crlf.parse_error, None);
+        assert_eq!(joined_crlf.path, "/interface/print");
+        assert!(joined_crlf.attributes.contains_key("count-only"));
+
+        // Non-newline backslash in unquoted word stays preserved
+        let literal_bs = parse_command_line(r"/file/print ?name=\backup");
+        assert_eq!(literal_bs.parse_error, None);
+        assert_eq!(literal_bs.query, vec!["name=\\backup".to_string()]);
+
+        // Inside double-quoted strings: backslash + newline + indentation is stripped
+        let in_str_lf =
+            parse_command_line("/system/note/set note=\"hello \\\n    world\" show-at-login=yes");
+        assert_eq!(in_str_lf.parse_error, None);
+        assert_eq!(
+            in_str_lf.attributes.get("note").map(String::as_str),
+            Some("hello world")
+        );
+
+        let in_str_crlf = parse_command_line("/system/note/set note=\"foo \\\r\n\tbar\"");
+        assert_eq!(in_str_crlf.parse_error, None);
+        assert_eq!(
+            in_str_crlf.attributes.get("note").map(String::as_str),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn test_comments_single_and_multiline() {
+        // Leading comment line followed by newline and command
+        let leading = parse_command_line("# list all interfaces\n/interface/print");
+        assert_eq!(leading.parse_error, None);
+        assert_eq!(leading.path, "/interface/print");
+
+        // Comment after trailing semicolon
+        let after_semi = parse_command_line("/interface/print ; # trailing comment");
+        assert_eq!(after_semi.parse_error, None);
+        assert_eq!(after_semi.path, "/interface/print");
+
+        // Inline comment only
+        let comment_only = parse_command_line("# just a comment\n");
+        assert_eq!(comment_only.parse_error, None);
+        assert_eq!(comment_only.path, "/");
+    }
+
+    #[test]
+    fn test_string_escape_variants_and_single_quotes() {
+        // Control & special double-quoted escapes: \a \b \f \v \? \r \t and unknown \z
+        let cmd = parse_command_line(r#"/system/note/set note="\a\b\f\v\?\r\t\z\41\2""#);
+        assert_eq!(cmd.parse_error, None);
+        assert_eq!(
+            cmd.attributes.get("note").map(String::as_str),
+            Some("\x07\x08\x0C\x0B?\r\tzA\\2")
+        );
+
+        // Unterminated backslash escape inside double quotes
+        let bad_dq_escape = parse_command_line("/system/note/set note=\"abc\\");
+        assert!(bad_dq_escape.parse_error.is_some());
+
+        // Single-quoted string literal and escapes
+        let sq = parse_command_line(
+            r"/ip/firewall/filter/add action=accept chain=input comment='it\'s \\fine'",
+        );
+        assert_eq!(sq.parse_error, None);
+        assert_eq!(
+            sq.attributes.get("comment").map(String::as_str),
+            Some("it's \\fine")
+        );
+
+        // Unterminated single-quoted strings
+        assert!(parse_command_line("/system/note/set note='unterminated")
+            .parse_error
+            .is_some());
+        assert!(parse_command_line("/system/note/set note='bad\\")
+            .parse_error
+            .is_some());
+    }
+
+    #[test]
+    fn test_api_style_assignments_empty_values_and_modifiers() {
+        // Pre-prefixed =key=value and trailing =flag=
+        let api_style = parse_command_line(
+            "/interface/print =.proplist=name,running =count-only= detail= brief terse without-paging",
+        );
+        assert_eq!(api_style.parse_error, None);
+        assert_eq!(api_style.path, "/interface/print");
+        assert_eq!(
+            api_style.proplist,
+            vec!["name".to_string(), "running".to_string()]
+        );
+        assert_eq!(
+            api_style.attributes.get("count-only").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            api_style.attributes.get("detail").map(String::as_str),
+            Some("")
+        );
+        assert!(!api_style.attributes.contains_key("brief"));
+        assert!(!api_style.attributes.contains_key("terse"));
+        assert!(!api_style.attributes.contains_key("without-paging"));
+
+        // Whitespace after `=` followed by another assignment / flag / `?` / `;`
+        let trailing_eq =
+            parse_command_line("/interface/print proplist=name,type comment= ?running ;");
+        assert_eq!(trailing_eq.parse_error, None);
+        assert_eq!(
+            trailing_eq.proplist,
+            vec!["name".to_string(), "type".to_string()]
+        );
+        assert_eq!(
+            trailing_eq.attributes.get("comment").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(trailing_eq.query, vec!["running".to_string()]);
+    }
+
+    #[test]
+    fn test_paths_queries_unset_and_positional_targets() {
+        // Space/colon path forms + bare ?query + where bare boolean
+        let colon_path = parse_command_line("ip:address:print where running");
+        assert_eq!(colon_path.parse_error, None);
+        assert_eq!(colon_path.path, "/ip/address/print");
+        assert_eq!(colon_path.query, vec!["running=true".to_string()]);
+
+        let spaced_path = parse_command_line("/ip /firewall/filter/print ?#|");
+        assert_eq!(spaced_path.parse_error, None);
+        assert_eq!(spaced_path.path, "/ip/firewall/filter/print");
+        assert_eq!(spaced_path.query, vec!["#|".to_string()]);
+
+        // Unset verb maps `!param` to value-name=param
+        let unset_cmd = parse_command_line("/ip/address/unset *1 !comment");
+        assert_eq!(unset_cmd.parse_error, None);
+        assert_eq!(unset_cmd.path, "/ip/address/unset");
+        assert_eq!(
+            unset_cmd.attributes.get(".id").map(String::as_str),
+            Some("*1")
+        );
+        assert_eq!(
+            unset_cmd.attributes.get("value-name").map(String::as_str),
+            Some("comment")
+        );
+
+        // Numeric comma-separated `.id` target + `!flag` on non-unset verb
+        let enable_cmd = parse_command_line("/interface/enable 0,1 !foo");
+        assert_eq!(enable_cmd.parse_error, None);
+        assert_eq!(enable_cmd.path, "/interface/enable");
+        assert_eq!(
+            enable_cmd.attributes.get(".id").map(String::as_str),
+            Some("0,1")
+        );
+        assert_eq!(
+            enable_cmd.attributes.get("!foo").map(String::as_str),
+            Some("")
+        );
+
+        // Positional address on ping / traceroute / dns-lookup + count bare arg
+        let ping = parse_command_line("/ping 1.1.1.1 count=3");
+        assert_eq!(ping.parse_error, None);
+        assert_eq!(ping.path, "/ping");
+        assert_eq!(
+            ping.attributes.get("address").map(String::as_str),
+            Some("1.1.1.1")
+        );
+        assert_eq!(ping.attributes.get("count").map(String::as_str), Some("3"));
+
+        let trace = parse_command_line("/tool/traceroute 8.8.8.8");
+        assert_eq!(trace.path, "/tool/traceroute");
+        assert_eq!(
+            trace.attributes.get("address").map(String::as_str),
+            Some("8.8.8.8")
+        );
     }
 }

@@ -52,13 +52,12 @@ impl Classifier for RuleClassifier {
 
         // 3. Verb classification
         match verb {
-            "print" | "get" | "find" | "listen" | "monitor" | "monitor-traffic" | "inspect" => {
-                Classification {
-                    class: SafetyClass::SafeRead,
-                    reason: None,
-                }
-            }
-            "ping" | "traceroute" | "dns-lookup" => Classification {
+            "print" | "get" | "find" | "export" | "listen" | "monitor" | "monitor-traffic"
+            | "inspect" => Classification {
+                class: SafetyClass::SafeRead,
+                reason: None,
+            },
+            "ping" | "traceroute" | "dns-lookup" | "bandwidth-test" => Classification {
                 class: SafetyClass::SafeRead,
                 reason: None,
             },
@@ -133,9 +132,9 @@ fn check_dangerous_write(path: &str, attrs: &HashMap<String, String>) -> Option<
 
 fn check_dangerous_read(path: &str, attrs: &HashMap<String, String>) -> Option<String> {
     // Exporting sensitive credentials, keys, or passwords
-    if path == "/export" || path.starts_with("/export/") {
+    if path == "/export" || path.starts_with("/export/") || path.ends_with("/export") {
         if let Some(val) = attrs.get("show-sensitive").or_else(|| attrs.get("verbose")) {
-            if val == "yes" || val == "true" {
+            if val == "yes" || val == "true" || val.is_empty() {
                 return Some("Exporting sensitive configuration secrets is blocked".into());
             }
         }
@@ -247,6 +246,74 @@ mod tests {
         assert_eq!(
             classifier.classify(&multi_stmt).class,
             SafetyClass::DangerousWrite
+        );
+
+        let mut spaced_verb = UncheckedCommand::new("/interface/print");
+        spaced_verb.path = "/interface print".to_string();
+        let spaced_report = classifier.classify(&spaced_verb);
+        assert_eq!(spaced_report.class, SafetyClass::DangerousWrite);
+        assert!(spaced_report
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("slash-delimited"));
+
+        for path in [
+            "/disk/format",
+            "/system/package/uninstall",
+            "/system/routerboard/upgrade",
+        ] {
+            assert_eq!(
+                classifier.classify(&UncheckedCommand::new(path)).class,
+                SafetyClass::DangerousWrite
+            );
+        }
+
+        let mut disable_primary = UncheckedCommand::new("/interface/disable");
+        disable_primary
+            .attributes
+            .insert(".id".to_string(), "*1".to_string());
+        assert_eq!(
+            classifier.classify(&disable_primary).class,
+            SafetyClass::DangerousWrite
+        );
+
+        let mut disable_ether1 = UncheckedCommand::new("/interface/remove");
+        disable_ether1
+            .attributes
+            .insert("numbers".to_string(), "ether1".to_string());
+        assert_eq!(
+            classifier.classify(&disable_ether1).class,
+            SafetyClass::DangerousWrite
+        );
+    }
+
+    #[test]
+    fn test_additional_dangerous_read_cases() {
+        let classifier = RuleClassifier;
+
+        let mut export_verbose = UncheckedCommand::new("/export");
+        export_verbose
+            .attributes
+            .insert("verbose".to_string(), "true".to_string());
+        assert_eq!(
+            classifier.classify(&export_verbose).class,
+            SafetyClass::DangerousRead
+        );
+
+        let export_safe = UncheckedCommand::new("/export");
+        assert_eq!(
+            classifier.classify(&export_safe).class,
+            SafetyClass::SafeRead
+        );
+
+        let mut bw_bounded = UncheckedCommand::new("/tool/bandwidth-test");
+        bw_bounded
+            .attributes
+            .insert("duration".to_string(), "5s".to_string());
+        assert_eq!(
+            classifier.classify(&bw_bounded).class,
+            SafetyClass::SafeRead
         );
     }
 }
