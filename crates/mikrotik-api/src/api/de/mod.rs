@@ -351,6 +351,11 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
             return Err(DeserializerError::MissingWord);
         }
 
+        if self.current_key.is_none() && self.current_value == Some("") {
+            self.current_value = None;
+            return visitor.visit_none();
+        }
+
         visitor.visit_some(self)
     }
 

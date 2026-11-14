@@ -19,10 +19,11 @@ pub enum Response<T> {
     /// `!trap` sentence, sent by the router instead of `!re` when an error happened.
     Trap {
         /// Type of error
-        /// TODO: make an enum, as possible values are well-known
+        #[serde(default)]
         category: Option<TrapCategory>,
 
         /// Error message, to be shown to the user
+        #[serde(default)]
         message: String,
     },
     /// `!fatal` sentence. A !fatal word is succeded by a simple string being the error message.
@@ -32,31 +33,33 @@ pub enum Response<T> {
 /// Possible values for !trap `category`.
 /// From <https://wiki.mikrotik.com/wiki/Manual:API#category>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum TrapCategory {
     /// 0 - missing item or command
-    MissingItemOrCommand = 0,
+    MissingItemOrCommand,
 
     /// 1 - argument value failure
-    ArgumentValueFailure = 1,
+    ArgumentValueFailure,
 
     /// 2 - execution of command interrupted
-    CommandExecutionInterrupted = 2,
+    CommandExecutionInterrupted,
 
     /// 3 - scripting related failure
-    ScriptingFailure = 3,
+    ScriptingFailure,
 
     /// 4 - general failure
-    GeneralFailure = 4,
+    GeneralFailure,
 
     /// 5 - API related failure
-    APIFailure = 5,
+    APIFailure,
 
     /// 6 - TTY related failure
-    TTYFailure = 6,
+    TTYFailure,
 
     /// 7 - value generated with :return command
-    ReturnValue = 7,
+    ReturnValue,
+
+    /// Unrecognized or future RouterOS trap category code
+    Other(u8),
 }
 
 impl<'de> Deserialize<'de> for TrapCategory {
@@ -73,10 +76,23 @@ impl<'de> Deserialize<'de> for TrapCategory {
             5 => Ok(TrapCategory::APIFailure),
             6 => Ok(TrapCategory::TTYFailure),
             7 => Ok(TrapCategory::ReturnValue),
-            unknown => Err(de::Error::invalid_value(
-                serde::de::Unexpected::Unsigned(unknown.into()),
-                &"a known trap category",
-            )),
+            unknown => Ok(TrapCategory::Other(unknown)),
+        }
+    }
+}
+
+impl From<TrapCategory> for u8 {
+    fn from(category: TrapCategory) -> Self {
+        match category {
+            TrapCategory::MissingItemOrCommand => 0,
+            TrapCategory::ArgumentValueFailure => 1,
+            TrapCategory::CommandExecutionInterrupted => 2,
+            TrapCategory::ScriptingFailure => 3,
+            TrapCategory::GeneralFailure => 4,
+            TrapCategory::APIFailure => 5,
+            TrapCategory::TTYFailure => 6,
+            TrapCategory::ReturnValue => 7,
+            TrapCategory::Other(code) => code,
         }
     }
 }
