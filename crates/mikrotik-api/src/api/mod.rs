@@ -1321,4 +1321,275 @@ mod tests {
             }]
         );
     }
+
+    #[tokio::test]
+    async fn test_active_users_and_interface_change_streams() {
+        use super::{ActiveUser, MikrotikAPI, Response};
+        use crate::InterfaceMTU;
+        use futures::StreamExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_stream, server_stream) = tokio::io::duplex(8192);
+        let disconnected = MikrotikAPI::from_stream(client_stream);
+
+        let server_task = tokio::spawn(async move {
+            let (mut server_read, mut server_write) = tokio::io::split(server_stream);
+            let mut read_buf = Vec::new();
+            let mut temp = [0u8; 1024];
+
+            let mut next_sentence = async |buf: &mut Vec<u8>| -> Vec<String> {
+                loop {
+                    let mut cur = Cursor::new(&buf[..]);
+                    if let Ok(s) = read_sentence(&mut cur) {
+                        let owned: Vec<String> = s.into_iter().map(|w| w.into_owned()).collect();
+                        let pos = cur.position() as usize;
+                        buf.drain(..pos);
+                        return owned;
+                    }
+                    let n = server_read.read(&mut temp).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&temp[..n]);
+                }
+            };
+
+            // 1. /login
+            let login_s = next_sentence(&mut read_buf).await;
+            let tag = login_s.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!done", tag, ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+
+            // 2. /user/active/listen
+            let s1 = next_sentence(&mut read_buf).await;
+            assert_eq!(s1[0], "/user/active/listen");
+            let tag1 = s1.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            server_write
+                .write_all(&encode_sentence(&[
+                    "!re",
+                    tag1,
+                    "=.id=*1",
+                    "=when=nov/14/2026 12:00:00",
+                    "=name=admin",
+                    "=address=10.0.0.2",
+                    "=via=api",
+                    "=group=full",
+                    "=radius=true",
+                    "",
+                ]))
+                .await
+                .unwrap();
+            server_write
+                .write_all(&encode_sentence(&[
+                    "!re",
+                    tag1,
+                    "=.id=*1",
+                    "=.dead=true",
+                    "",
+                ]))
+                .await
+                .unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!done", tag1, ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+
+            // 3. /interface/listen via interfaces_changes
+            let s2 = next_sentence(&mut read_buf).await;
+            assert_eq!(s2[0], "/interface/listen");
+            let tag2 = s2.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            server_write
+                .write_all(&encode_sentence(&[
+                    "!re",
+                    tag2,
+                    "=.id=*2",
+                    "=name=ether1",
+                    "=type=ether",
+                    "=mtu=1500",
+                    "=actual-mtu=1500",
+                    "=running=true",
+                    "",
+                ]))
+                .await
+                .unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!done", tag2, ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+
+            // 4. /interface/listen via interface_changes alias
+            let s3 = next_sentence(&mut read_buf).await;
+            assert_eq!(s3[0], "/interface/listen");
+            let tag3 = s3.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            server_write
+                .write_all(&encode_sentence(&[
+                    "!re",
+                    tag3,
+                    "=.id=*2",
+                    "=.dead=true",
+                    "",
+                ]))
+                .await
+                .unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!done", tag3, ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+        });
+
+        let api = disconnected.authenticate("admin", "secret").await.unwrap();
+
+        let mut u_tag = 0;
+        let users: Vec<_> = api.active_users(&mut u_tag).await.collect().await;
+        assert!(u_tag > 0);
+        assert_eq!(users.len(), 2);
+        match &users[0] {
+            Response::Reply(ActiveUser::Active {
+                id,
+                name,
+                address,
+                via,
+                group,
+                radius,
+                ..
+            }) => {
+                assert_eq!(id, "*1");
+                assert_eq!(name, "admin");
+                assert_eq!(address.as_deref(), Some("10.0.0.2"));
+                assert_eq!(via, "api");
+                assert_eq!(group.as_deref(), Some("full"));
+                assert!(*radius);
+            }
+            other => panic!("unexpected user event: {other:?}"),
+        }
+        assert!(matches!(
+            &users[1],
+            Response::Reply(ActiveUser::Dead(id)) if id == "*1"
+        ));
+
+        let mut i_tag = 0;
+        let changes: Vec<_> = api.interfaces_changes(&mut i_tag).await.collect().await;
+        assert_eq!(changes.len(), 1);
+        match &changes[0] {
+            Response::Reply(ch) => {
+                assert_eq!(ch.id, "*2");
+                assert_eq!(ch.name.as_deref(), Some("ether1"));
+                assert_eq!(ch.mtu, Some(InterfaceMTU::Value(1500)));
+                assert_eq!(ch.running, Some(true));
+                assert!(!ch.is_dead);
+            }
+            other => panic!("unexpected interface change: {other:?}"),
+        }
+
+        let mut alias_tag = 0;
+        let alias_changes: Vec<_> = api.interface_changes(&mut alias_tag).await.collect().await;
+        assert_eq!(alias_changes.len(), 1);
+        match &alias_changes[0] {
+            Response::Reply(ch) => assert!(ch.is_dead && ch.id == "*2"),
+            other => panic!("unexpected alias change: {other:?}"),
+        }
+
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_debug_active_calls_count_unknown_tag_and_dropped_stream_cleanup() {
+        use super::MikrotikAPI;
+        use std::collections::HashMap;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_stream, server_stream) = tokio::io::duplex(8192);
+        let disconnected = MikrotikAPI::from_stream(client_stream);
+        assert!(format!("{disconnected:?}").contains("MikrotikAPI"));
+
+        let (tx_drop_checked, rx_drop_checked) = tokio::sync::oneshot::channel::<()>();
+
+        let server_task = tokio::spawn(async move {
+            let (mut server_read, mut server_write) = tokio::io::split(server_stream);
+            let mut read_buf = Vec::new();
+            let mut temp = [0u8; 1024];
+
+            let mut next_sentence = async |buf: &mut Vec<u8>| -> Vec<String> {
+                loop {
+                    let mut cur = Cursor::new(&buf[..]);
+                    if let Ok(s) = read_sentence(&mut cur) {
+                        let owned: Vec<String> = s.into_iter().map(|w| w.into_owned()).collect();
+                        let pos = cur.position() as usize;
+                        buf.drain(..pos);
+                        return owned;
+                    }
+                    let n = server_read.read(&mut temp).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&temp[..n]);
+                }
+            };
+
+            // 1. /login
+            let login_s = next_sentence(&mut read_buf).await;
+            let tag = login_s.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!done", tag, ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+
+            // 2. Receive dropped streaming call, wait until client drops it, then send !re so event_loop hits ChannelClosed
+            let stream_s = next_sentence(&mut read_buf).await;
+            let stream_tag = stream_s.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            rx_drop_checked.await.unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!re", stream_tag, "=k=v", ""]))
+                .await
+                .unwrap();
+
+            // Also send an unknown-tag frame and untagged frame (event_loop should ignore cleanly)
+            server_write
+                .write_all(&encode_sentence(&["!re", ".tag=65000", "=k=v", ""]))
+                .await
+                .unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!re", "=k=untagged", ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+
+            // 3. Subsequent normal oneshot call still succeeds
+            let ping_s = next_sentence(&mut read_buf).await;
+            let ping_tag = ping_s.iter().find(|w| w.starts_with(".tag=")).unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!re", ping_tag, "=ok=yes", ""]))
+                .await
+                .unwrap();
+            server_write
+                .write_all(&encode_sentence(&["!done", ping_tag, ""]))
+                .await
+                .unwrap();
+            server_write.flush().await.unwrap();
+        });
+
+        let api = disconnected.authenticate("admin", "secret").await.unwrap();
+        assert!(format!("{api:?}").contains("MikrotikAPI"));
+        assert_eq!(api.active_calls_count(), 0);
+
+        let mut tag = 0;
+        let stream = api
+            .generic_streaming_call::<HashMap<String, String>>("/log/listen", None, &mut tag)
+            .await;
+        assert_eq!(api.active_calls_count(), 1);
+        drop(stream);
+        tx_drop_checked.send(()).unwrap();
+
+        let res: HashMap<String, String> = api
+            .generic_oneshot_call("/system/identity/print", None)
+            .await
+            .expect("call after closed stream & unknown tag must succeed");
+        assert_eq!(res.get("ok").map(String::as_str), Some("yes"));
+        assert_eq!(api.active_calls_count(), 0);
+
+        server_task.await.unwrap();
+    }
 }
