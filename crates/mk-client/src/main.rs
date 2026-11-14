@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use clap::{CommandFactory, Parser};
 use dialoguer::Password;
 use futures::StreamExt;
@@ -88,7 +93,11 @@ pub async fn main() {
 
     use config::Command::*;
     match args.command {
-        Identify { full } => identify::identify(&api, full).await,
+        Identify { full } => {
+            if identify::identify(&api, full).await.is_err() {
+                std::process::exit(1);
+            }
+        }
 
         Custom {
             one_off,
@@ -104,17 +113,31 @@ pub async fn main() {
 
                 (false, false, true) => CommandType::Streaming,
 
+                (false, false, false) => {
+                    let mut cmd = Args::command();
+                    cmd.error(
+                        clap::error::ErrorKind::MissingRequiredArgument,
+                        "One of --one-off, --array-list, or --listen is required",
+                    )
+                    .exit();
+                }
+
                 _ => {
                     let mut cmd = Args::command();
                     cmd.error(
                         clap::error::ErrorKind::ArgumentConflict,
-                        "Arguments are mutually exclusive",
+                        "Arguments --one-off, --array-list, and --listen are mutually exclusive",
                     )
                     .exit();
                 }
             };
 
-            custom::custom_command(&api, cmd_type, &command, proplist).await;
+            if custom::custom_command(&api, cmd_type, &command, proplist)
+                .await
+                .is_err()
+            {
+                std::process::exit(1);
+            }
         }
 
         ActiveUsers => {
@@ -124,33 +147,55 @@ pub async fn main() {
 
             info!("Listening for active users...");
 
-            if let Err(e) = tokio::spawn(stream.for_each(move |item| async {
-                if let Response::Reply(user) = item {
-                    use mikrotik_api::ActiveUser::*;
-                    match user {
-                        Dead(id) => info!("User id {} disconnected", id),
-                        Active {
-                            id,
-                            name,
-                            address,
-                            via,
-                            ..
-                        } => {
-                            info!(
-                                "User '{}' (id: {}) logged in via {} from {}",
-                                name,
-                                id,
-                                via,
-                                address.as_deref().unwrap_or("unknown")
-                            );
+            let failed = Arc::new(AtomicBool::new(false));
+            let task_failed = Arc::clone(&failed);
+
+            if let Err(e) = tokio::spawn(stream.for_each(move |item| {
+                let task_failed = Arc::clone(&task_failed);
+                async move {
+                    match item {
+                        Response::Reply(user) => {
+                            use mikrotik_api::ActiveUser::*;
+                            match user {
+                                Dead(id) => info!("User id {} disconnected", id),
+                                Active {
+                                    id,
+                                    name,
+                                    address,
+                                    via,
+                                    ..
+                                } => {
+                                    info!(
+                                        "User '{}' (id: {}) logged in via {} from {}",
+                                        name,
+                                        id,
+                                        via,
+                                        address.as_deref().unwrap_or("unknown")
+                                    );
+                                }
+                            }
                         }
+                        Response::Trap { message, .. } => {
+                            eprintln!("Active users stream error: {}", message);
+                            task_failed.store(true, Ordering::Relaxed);
+                        }
+                        Response::Fatal => {
+                            eprintln!("Connection closed by router (Fatal)");
+                            task_failed.store(true, Ordering::Relaxed);
+                        }
+                        Response::Done => info!("Active users stream finished"),
                     }
                 }
             }))
             .await
             {
                 eprintln!("Active users task failed: {}", e);
+                std::process::exit(1);
+            }
+
+            if failed.load(Ordering::Relaxed) {
+                std::process::exit(1);
             }
         }
-    };
+    }
 }
