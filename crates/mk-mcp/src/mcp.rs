@@ -94,7 +94,10 @@ pub struct PaginatedRows {
     pub rows: Vec<Row>,
 }
 
-fn apply_filter_to_command(unchecked: &mut UncheckedCommand, filter: &HashMap<String, String>) {
+pub(crate) fn apply_filter_to_command(
+    unchecked: &mut UncheckedCommand,
+    filter: &HashMap<String, String>,
+) {
     if filter.is_empty() {
         return;
     }
@@ -110,7 +113,7 @@ fn apply_filter_to_command(unchecked: &mut UncheckedCommand, filter: &HashMap<St
     }
 }
 
-fn post_filter_rows(
+pub(crate) fn post_filter_rows(
     mut rows: Vec<Row>,
     filter: &HashMap<String, String>,
     proplist: &[String],
