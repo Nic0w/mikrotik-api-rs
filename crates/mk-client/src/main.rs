@@ -104,6 +104,7 @@ pub async fn main() {
             array_list,
             listen,
             proplist,
+            attributes,
             command,
         } => {
             let cmd_type = match (one_off, array_list, listen) {
@@ -132,7 +133,7 @@ pub async fn main() {
                 }
             };
 
-            if custom::custom_command(&api, cmd_type, &command, proplist)
+            if custom::custom_command(&api, cmd_type, &command, proplist, &attributes)
                 .await
                 .is_err()
             {

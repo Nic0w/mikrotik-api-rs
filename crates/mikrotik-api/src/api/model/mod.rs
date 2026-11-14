@@ -391,3 +391,71 @@ impl<'de> Deserialize<'de> for InterfaceMTU {
         }
     }
 }
+
+/// Request type for RouterOS `/console/inspect` command introspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleInspectRequest {
+    /// Query command/argument syntax and help descriptions (`request=syntax`).
+    Syntax,
+    /// Query metadata for the current node (`request=self`).
+    SelfNode,
+    /// Query child commands, paths, and arguments under `path` (`request=child`).
+    Child,
+    /// Query interactive tab completions (`request=completion`).
+    Completion,
+    /// Query syntax highlighting tokens (`request=highlight`).
+    Highlight,
+    /// Query syntax error diagnostics (`request=error`).
+    Error,
+}
+
+impl ConsoleInspectRequest {
+    /// Return the wire attribute value for `=request=<value>`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Syntax => "syntax",
+            Self::SelfNode => "self",
+            Self::Child => "child",
+            Self::Completion => "completion",
+            Self::Highlight => "highlight",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Single reply item returned by `/console/inspect`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ConsoleInspectItem {
+    /// Entry type reported by RouterOS (e.g., `child`, `syntax`, `self`, `completion`).
+    #[serde(rename = "type", default)]
+    pub item_type: Option<String>,
+
+    /// Child node or argument name (`request=child` / `request=self`).
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Node classification (e.g., `dir`, `path`, `cmd`, `arg`).
+    #[serde(default)]
+    pub node_type: Option<String>,
+
+    /// Syntax symbol name (`request=syntax`).
+    #[serde(default)]
+    pub symbol: Option<String>,
+
+    /// Syntax symbol classification (e.g., `explanation`, `definition`).
+    #[serde(default)]
+    pub symbol_type: Option<String>,
+
+    /// Nesting depth for syntax definitions (`request=syntax`).
+    #[serde(default)]
+    pub nested: Option<u32>,
+
+    /// Whether the syntax rule is non-normative (`request=syntax`).
+    #[serde(default)]
+    pub nonorm: Option<bool>,
+
+    /// Human-readable description or syntax text (`request=syntax`).
+    #[serde(default)]
+    pub text: Option<String>,
+}
