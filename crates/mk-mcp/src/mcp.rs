@@ -94,6 +94,41 @@ pub struct PaginatedRows {
     pub rows: Vec<Row>,
 }
 
+/// A single command entry inside a `routeros_batch` request.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct BatchCommandItem {
+    /// Optional caller-assigned key for correlating this command's result in the response map.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Full RouterOS command path (e.g. "/ip/service/print", "/ip/firewall/filter/print").
+    pub command: String,
+    /// Key-value command attributes (e.g. {"address": "1.1.1.1"}).
+    #[serde(default)]
+    pub attributes: HashMap<String, String>,
+    /// Query filter words (e.g. ["running=true", "dynamic=false"]).
+    #[serde(default)]
+    pub query: Vec<String>,
+    /// Ergonomic key-value equality filter (e.g. {"disabled": "false", "running": "true"}).
+    #[serde(default)]
+    pub filter: HashMap<String, String>,
+    /// Specific property fields to retrieve (e.g. ["name", "mac-address"]).
+    #[serde(default)]
+    pub proplist: Vec<String>,
+    /// Maximum number of records to return (defaults to 100).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Number of records to skip for pagination (defaults to 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+}
+
+/// Arguments for `routeros_batch` tool.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct BatchArgs {
+    /// List of RouterOS commands to authorize and execute concurrently.
+    pub requests: Vec<BatchCommandItem>,
+}
+
 pub(crate) fn apply_filter_to_command(
     unchecked: &mut UncheckedCommand,
     filter: &HashMap<String, String>,
@@ -136,11 +171,27 @@ pub(crate) fn post_filter_rows(
     rows
 }
 
-fn format_exec_rows(
+fn format_policy_stop(stop: PolicyStop) -> String {
+    match stop {
+        PolicyStop::Denied { class, reason } => {
+            format!("Safety Policy Denied ({class:?}): {reason}")
+        }
+        PolicyStop::NeedsConfirmation {
+            class,
+            reason,
+            pending,
+        } => format!(
+            "Confirmation Required ({class:?}): {reason} (Command: '{}')",
+            pending.path
+        ),
+    }
+}
+
+fn build_exec_value(
     rows: Vec<Row>,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> Result<ContentBlock, McpError> {
+) -> Result<serde_json::Value, McpError> {
     let total_count = rows.len();
     let offset_val = offset.unwrap_or(0);
     let limit_val = limit.unwrap_or(DEFAULT_EXEC_LIMIT);
@@ -149,13 +200,13 @@ fn format_exec_rows(
     let returned_count = paged_rows.len();
     let truncated = offset_val.saturating_add(returned_count) < total_count;
 
-    if truncated || limit.is_some() || offset.is_some() {
+    let res = if truncated || limit.is_some() || offset.is_some() {
         let message = truncated.then(|| {
             format!(
                 "Output truncated: showing {returned_count} of {total_count} rows (offset {offset_val}). Narrow results with 'proplist', 'filter'/'query', or paginate with 'offset' and 'limit'."
             )
         });
-        ContentBlock::json(PaginatedRows {
+        serde_json::to_value(PaginatedRows {
             total_count,
             returned_count,
             offset: offset_val,
@@ -164,8 +215,18 @@ fn format_exec_rows(
             rows: paged_rows,
         })
     } else {
-        ContentBlock::json(paged_rows)
-    }
+        serde_json::to_value(paged_rows)
+    };
+
+    res.map_err(|e| McpError::internal_error(format!("Failed to serialize query rows: {e}"), None))
+}
+
+fn format_exec_rows(
+    rows: Vec<Row>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ContentBlock, McpError> {
+    ContentBlock::json(build_exec_value(rows, limit, offset)?)
 }
 
 /// Item metadata discovered via `/console/inspect`.
@@ -512,20 +573,10 @@ impl MkMcpServer {
 
         let authorized = match self.safety.authorize(unchecked) {
             Ok(auth) => auth,
-            Err(PolicyStop::Denied { class, reason }) => {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "Safety Policy Denied ({class:?}): {reason}"
-                ))]));
-            }
-            Err(PolicyStop::NeedsConfirmation {
-                class,
-                reason,
-                pending,
-            }) => {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "Confirmation Required ({class:?}): {reason} (Command: '{}')",
-                    pending.path
-                ))]));
+            Err(stop) => {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    format_policy_stop(stop),
+                )]));
             }
         };
 
@@ -559,6 +610,101 @@ impl MkMcpServer {
                     "Command failed on router: {e}"
                 ))])),
             }
+        }
+    }
+
+    /// Execute multiple RouterOS commands concurrently in a single batch call.
+    #[tool(
+        description = "Execute multiple RouterOS commands in a single batch call. Evaluates safety policy per command and executes authorized queries concurrently."
+    )]
+    pub async fn routeros_batch(
+        &self,
+        Parameters(args): Parameters<BatchArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.requests.is_empty() {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                "At least one command request must be provided in 'requests'.",
+            )]));
+        }
+
+        let mut seen_keys: HashMap<String, usize> = HashMap::new();
+        let mut ordered_keys = Vec::with_capacity(args.requests.len());
+        let mut results: HashMap<String, serde_json::Value> =
+            HashMap::with_capacity(args.requests.len());
+        let mut tasks = Vec::new();
+
+        for item in args.requests {
+            let base_key = item.id.unwrap_or_else(|| item.command.clone());
+            let count = seen_keys.entry(base_key.clone()).or_insert(0);
+            *count += 1;
+            let key = if *count == 1 {
+                base_key
+            } else {
+                format!("{base_key}#{count}")
+            };
+            ordered_keys.push(key.clone());
+
+            let mut unchecked = UncheckedCommand::new(&item.command);
+            unchecked.attributes.extend(item.attributes);
+            unchecked.query.extend(item.query);
+            apply_filter_to_command(&mut unchecked, &item.filter);
+            unchecked.proplist.extend(item.proplist);
+            let effective_proplist = unchecked.proplist.clone();
+
+            if unchecked.is_streaming {
+                results.insert(
+                    key,
+                    serde_json::json!({
+                        "error": "Streaming commands (*/listen) are not supported in routeros_batch; use routeros_exec instead."
+                    }),
+                );
+                continue;
+            }
+
+            let authorized = match self.safety.authorize(unchecked) {
+                Ok(auth) => auth,
+                Err(stop) => {
+                    results.insert(
+                        key,
+                        serde_json::json!({ "error": format_policy_stop(stop) }),
+                    );
+                    continue;
+                }
+            };
+
+            let driver = self.driver.clone();
+            let filter = item.filter;
+            let limit = item.limit;
+            let offset = item.offset;
+            tasks.push(async move {
+                let val = match driver.execute(authorized).await {
+                    Ok(rows) => {
+                        let filtered = post_filter_rows(rows, &filter, &effective_proplist);
+                        build_exec_value(filtered, limit, offset)?
+                    }
+                    Err(e) => serde_json::json!({
+                        "error": format!("Command failed on router: {e}")
+                    }),
+                };
+                Ok::<_, McpError>((key, val))
+            });
+        }
+
+        for outcome in futures::future::join_all(tasks).await {
+            let (key, val) = outcome?;
+            results.insert(key, val);
+        }
+
+        let mut ordered = serde_json::Map::with_capacity(ordered_keys.len());
+        for key in ordered_keys {
+            if let Some(val) = results.remove(&key) {
+                ordered.insert(key, val);
+            }
+        }
+
+        match ContentBlock::json(serde_json::json!({ "results": ordered })) {
+            Ok(b) => Ok(CallToolResult::success(vec![b])),
+            Err(e) => Err(e),
         }
     }
 }
