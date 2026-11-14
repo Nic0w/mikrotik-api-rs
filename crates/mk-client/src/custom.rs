@@ -21,14 +21,24 @@ pub async fn custom_command(
     cmd_type: CommandType,
     command: &str,
     proplist: Option<String>,
+    extra_attributes: &[(String, String)],
 ) -> Result<(), ()> {
-    let mut attributes = Vec::new();
+    let mut attributes =
+        Vec::with_capacity(extra_attributes.len() + usize::from(proplist.is_some()));
 
     if let Some(list) = proplist.as_deref() {
-        attributes.push((".proplist", list))
+        attributes.push((".proplist", list));
     }
 
-    let attributes = Some(attributes.as_slice());
+    for (key, value) in extra_attributes {
+        attributes.push((key.as_str(), value.as_str()));
+    }
+
+    let attributes = if attributes.is_empty() {
+        None
+    } else {
+        Some(attributes.as_slice())
+    };
 
     use CommandType::*;
     match cmd_type {

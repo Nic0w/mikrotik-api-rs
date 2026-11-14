@@ -129,6 +129,69 @@ mod tests {
             ("[::1]:8729".to_string(), "::1".to_string())
         );
     }
+
+    #[test]
+    fn test_parse_key_val() {
+        assert_eq!(
+            parse_key_val("request=syntax").unwrap(),
+            ("request".to_string(), "syntax".to_string())
+        );
+        assert_eq!(
+            parse_key_val("?comment=a=b=c").unwrap(),
+            ("?comment".to_string(), "a=b=c".to_string())
+        );
+        assert_eq!(
+            parse_key_val("empty=").unwrap(),
+            ("empty".to_string(), String::new())
+        );
+        assert!(parse_key_val("no_equals").is_err());
+        assert!(parse_key_val("=missing_key").is_err());
+    }
+
+    #[test]
+    fn test_custom_command_repeatable_attributes() {
+        let args = Args::try_parse_from([
+            "mk-client",
+            "-A",
+            "192.168.88.1",
+            "-L",
+            "admin",
+            "-P",
+            "secret",
+            "custom",
+            "--array-list",
+            "-p",
+            "type,name",
+            "-a",
+            "request=child",
+            "--attribute",
+            "path=ip,address",
+            "/console/inspect",
+        ])
+        .unwrap();
+
+        match args.command {
+            Command::Custom {
+                array_list,
+                proplist,
+                attributes,
+                command,
+                ..
+            } => {
+                assert!(array_list);
+                assert_eq!(proplist.as_deref(), Some("type,name"));
+                assert_eq!(
+                    attributes,
+                    vec![
+                        ("request".to_string(), "child".to_string()),
+                        ("path".to_string(), "ip,address".to_string()),
+                    ]
+                );
+                assert_eq!(command, "/console/inspect");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -153,6 +216,27 @@ pub enum Command {
         #[clap(short, long, help = "set .proplist")]
         proplist: Option<String>,
 
+        #[clap(
+            short = 'a',
+            long = "attribute",
+            value_parser = parse_key_val,
+            value_name = "KEY=VALUE",
+            help = "pass command attribute (repeatable, e.g. -a request=syntax -a path=ip,address)"
+        )]
+        attributes: Vec<(String, String)>,
+
         command: String,
     },
+}
+
+fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let (key, val) = s
+        .split_once('=')
+        .ok_or_else(|| format!("invalid KEY=VALUE: no `=` found in `{s}`"))?;
+
+    if key.is_empty() {
+        return Err(format!("invalid KEY=VALUE: empty key in `{s}`"));
+    }
+
+    Ok((key.to_string(), val.to_string()))
 }
