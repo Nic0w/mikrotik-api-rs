@@ -21,7 +21,10 @@ use crate::api::call::{ArrayListCall, EmptyCall};
 use self::{
     call::{AsyncCall, OneShotCall, StreamingCall},
     listener::event_loop,
-    model::{ActiveUser, Interface, InterfaceChange, Response, SystemResources},
+    model::{
+        ActiveUser, ConsoleInspectItem, ConsoleInspectRequest, Interface, InterfaceChange,
+        Response, SystemResources,
+    },
 };
 
 mod call;
@@ -314,6 +317,25 @@ impl MikrotikAPI<Authenticated> {
         tag: &mut u16,
     ) -> impl Stream<Item = Response<InterfaceChange>> {
         self.interfaces_changes(tag).await
+    }
+
+    /// Query the RouterOS CLI command tree and syntax metadata via `/console/inspect`.
+    pub async fn console_inspect(
+        &self,
+        request: ConsoleInspectRequest,
+        path: Option<&str>,
+        input: Option<&str>,
+    ) -> Result<Vec<ConsoleInspectItem>, Error> {
+        let mut attributes = Vec::with_capacity(3);
+        attributes.push(("request", request.as_str()));
+        if let Some(p) = path {
+            attributes.push(("path", p));
+        }
+        if let Some(inp) = input {
+            attributes.push(("input", inp));
+        }
+        self.generic_array_call("/console/inspect", Some(&attributes))
+            .await
     }
 
     /// Allows to call generic commands returning a one-off response
@@ -1219,5 +1241,84 @@ mod tests {
         let (r1, r2) = tokio::join!(h1, h2);
         assert!(r1.unwrap().is_ok());
         assert!(r2.unwrap().is_ok());
+    }
+
+    #[test]
+    fn test_console_inspect_request_variants() {
+        use super::ConsoleInspectRequest;
+
+        assert_eq!(ConsoleInspectRequest::Syntax.as_str(), "syntax");
+        assert_eq!(ConsoleInspectRequest::SelfNode.as_str(), "self");
+        assert_eq!(ConsoleInspectRequest::Child.as_str(), "child");
+        assert_eq!(ConsoleInspectRequest::Completion.as_str(), "completion");
+        assert_eq!(ConsoleInspectRequest::Highlight.as_str(), "highlight");
+        assert_eq!(ConsoleInspectRequest::Error.as_str(), "error");
+    }
+
+    #[tokio::test]
+    async fn test_console_inspect_wire_and_decoding() {
+        use super::{ConsoleInspectItem, ConsoleInspectRequest, MikrotikAPI};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_stream, mut server_stream) = tokio::io::duplex(8192);
+        let disconnected = MikrotikAPI::from_stream(client_stream);
+
+        let server_task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024];
+            let _ = server_stream.read(&mut buf).await.unwrap();
+            let login_reply = encode_sentence(&["!done", ".tag=1", ""]);
+            server_stream.write_all(&login_reply).await.unwrap();
+            server_stream.flush().await.unwrap();
+
+            let n = server_stream.read(&mut buf).await.unwrap();
+            let mut cur = Cursor::new(&buf[..n]);
+            let req: Vec<String> = read_sentence(&mut cur)
+                .unwrap()
+                .into_iter()
+                .map(|w| w.into_owned())
+                .collect();
+
+            assert_eq!(req[0], "/console/inspect");
+            assert!(req.contains(&"=request=syntax".to_string()));
+            assert!(req.contains(&"=path=ip,address".to_string()));
+            let tag = req.iter().find(|w| w.starts_with(".tag=")).unwrap();
+
+            let reply = encode_sentence(&[
+                "!re",
+                tag,
+                "=type=syntax",
+                "=symbol=print",
+                "=symbol-type=explanation",
+                "=nested=0",
+                "=nonorm=true",
+                "=text=Show IP addresses",
+                "",
+            ]);
+            let done = encode_sentence(&["!done", tag, ""]);
+            server_stream.write_all(&reply).await.unwrap();
+            server_stream.write_all(&done).await.unwrap();
+            server_stream.flush().await.unwrap();
+        });
+
+        let api = disconnected.authenticate("admin", "secret").await.unwrap();
+        let items = api
+            .console_inspect(ConsoleInspectRequest::Syntax, Some("ip,address"), None)
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(
+            items,
+            vec![ConsoleInspectItem {
+                item_type: Some("syntax".to_string()),
+                name: None,
+                node_type: None,
+                symbol: Some("print".to_string()),
+                symbol_type: Some("explanation".to_string()),
+                nested: Some(0),
+                nonorm: Some(true),
+                text: Some("Show IP addresses".to_string()),
+            }]
+        );
     }
 }

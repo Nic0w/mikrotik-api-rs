@@ -108,7 +108,8 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 mod api;
 
 pub use api::model::{
-    ActiveUser, Interface, InterfaceChange, InterfaceMTU, Response, SystemResources, TrapCategory,
+    ActiveUser, ConsoleInspectItem, ConsoleInspectRequest, Interface, InterfaceChange,
+    InterfaceMTU, Response, SystemResources, TrapCategory,
 };
 #[cfg(feature = "tls")]
 pub use api::tls::{TlsConfig, TlsConfigBuilder};
