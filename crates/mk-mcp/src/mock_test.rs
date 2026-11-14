@@ -576,4 +576,97 @@ mod tests {
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].get("name").map(String::as_str), Some("bridge"));
     }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_exec_filter_wire_and_rows() {
+        use std::collections::HashMap;
+
+        use crate::mcp::apply_filter_to_command;
+        use crate::safety::UncheckedCommand;
+
+        // 1. Verify wire query translation is sorted and handles optional '?' / '=' prefixes
+        let mut cmd = UncheckedCommand::new("/interface/print");
+        let filter = HashMap::from([
+            ("running".to_string(), "true".to_string()),
+            ("?disabled".to_string(), "false".to_string()),
+        ]);
+        apply_filter_to_command(&mut cmd, &filter);
+        let gate = SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier);
+        let auth = gate.authorize(cmd).expect("authorized");
+        assert_eq!(
+            auth.to_wire_attributes(),
+            vec![
+                ("?disabled=false".to_string(), String::new()),
+                ("?running=true".to_string(), String::new()),
+            ]
+        );
+
+        // 2. Verify end-to-end execution filters returned rows
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = ExecArgs {
+            command: Some("/interface/print".into()),
+            filter: HashMap::from([("type".to_string(), "bridge".to_string())]),
+            ..Default::default()
+        };
+
+        let result = server
+            .routeros_exec(Parameters(args))
+            .await
+            .expect("exec succeeds");
+        assert_ne!(result.is_error, Some(true));
+
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .as_str();
+        let rows: Vec<crate::router::Row> = serde_json::from_str(text).expect("valid rows JSON");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("name").map(String::as_str), Some("bridge"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_exec_filter_combined_with_pagination() {
+        use std::collections::HashMap;
+
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = ExecArgs {
+            command: Some("/ip/route/print".into()),
+            filter: HashMap::from([("dst-address".to_string(), "10.0.5.0/24".to_string())]),
+            limit: Some(1),
+            offset: Some(0),
+            ..Default::default()
+        };
+
+        let result = server
+            .routeros_exec(Parameters(args))
+            .await
+            .expect("exec succeeds");
+        assert_ne!(result.is_error, Some(true));
+
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .as_str();
+        let page: PaginatedRows = serde_json::from_str(text).expect("valid PaginatedRows JSON");
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.returned_count, 1);
+        assert!(!page.truncated);
+        assert_eq!(page.rows[0].get(".id").map(String::as_str), Some("*5"));
+    }
 }
