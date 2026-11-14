@@ -115,7 +115,7 @@ impl<A, V: FromIterator<A>> FromIterator<Response<A>> for Response<V> {
 
         use Response::*;
         //No idea what I'm doing. This code has been inspired from https://github.com/rust-lang/rust/pull/59605
-        let v: V = FromIterator::from_iter(iter.into_iter().scan((), |_, elt| match elt {
+        let v: V = FromIterator::from_iter(iter.into_iter().filter_map(|elt| match elt {
             Done => None,
             Fatal => {
                 found_fatal = true;
