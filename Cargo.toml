@@ -12,7 +12,7 @@ lto = true
 strip = true
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.11"
 edition = "2021"
 license = "GPL-3.0-only"
 license-file = "LICENSE"
@@ -22,7 +22,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Internal workspace crates
-mikrotik_api = { path = "crates/mikrotik-api", version = "0.5.0" }
+mikrotik_api = { path = "crates/mikrotik-api", version = "0.5.11" }
 
 # Shared core dependencies
 bytes = "1.12.1"
