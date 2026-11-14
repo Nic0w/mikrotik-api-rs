@@ -772,4 +772,400 @@ mod tests {
         assert!(err_msg.contains("Safety Policy Denied"));
         assert!(err_msg.contains("DangerousWrite"));
     }
+
+    struct QueueMockConnector {
+        streams: std::sync::Mutex<std::collections::VecDeque<tokio::io::DuplexStream>>,
+    }
+
+    impl QueueMockConnector {
+        fn new(streams: impl IntoIterator<Item = tokio::io::DuplexStream>) -> Self {
+            Self {
+                streams: std::sync::Mutex::new(streams.into_iter().collect()),
+            }
+        }
+    }
+
+    impl crate::router::RouterConnector for QueueMockConnector {
+        fn connect(
+            &self,
+        ) -> crate::router::BoxFuture<'_, Result<MikrotikAPI<Authenticated>, mikrotik_api::Error>>
+        {
+            let stream = self.streams.lock().unwrap().pop_front();
+            Box::pin(async move {
+                let s = stream.ok_or(mikrotik_api::Error::EndOfStream)?;
+                let api = MikrotikAPI::from_stream(s);
+                api.authenticate("admin", "").await
+            })
+        }
+    }
+
+    fn spawn_custom_router<F, Fut>(
+        mut server_io: tokio::io::DuplexStream,
+        handler: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(String, Vec<String>, String) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Vec<Vec<u8>>> + Send,
+    {
+        tokio::spawn(async move {
+            while let Ok(words) = read_sentence(&mut server_io).await {
+                if words.is_empty() {
+                    continue;
+                }
+                let cmd = words[0].clone();
+                let tag_word = format!(".tag={}", get_tag(&words));
+                let frames = if cmd == "/login" {
+                    vec![encode_sentence(&["!done", &tag_word])]
+                } else {
+                    handler(cmd, words, tag_word).await
+                };
+                for frame in frames {
+                    if server_io.write_all(&frame).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        })
+    }
+
+    fn assert_tool_error(res: rmcp::model::CallToolResult, needle: &str) {
+        assert_eq!(
+            res.is_error,
+            Some(true),
+            "expected error CallToolResult, got: {res:?}"
+        );
+        let text = serde_json::to_string(&res.content).unwrap();
+        assert!(
+            text.contains(needle),
+            "expected '{needle}' in tool error content: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mcp_get_overview_trap_propagation_and_missing_identity_name() {
+        for failing_cmd in [
+            "/system/identity/print",
+            "/system/resource/print",
+            "/interface/print",
+            "/ip/address/print",
+        ] {
+            let (client_io, server_io) = tokio::io::duplex(16384);
+            let fail = failing_cmd.to_string();
+            let _task = spawn_custom_router(server_io, move |cmd, _words, tag_word| {
+                let fail = fail.clone();
+                async move {
+                    if cmd == fail {
+                        return vec![
+                            encode_sentence(&["!trap", &tag_word, "=message=simulated failure"]),
+                            encode_sentence(&["!done", &tag_word]),
+                        ];
+                    }
+                    match cmd.as_str() {
+                        "/system/identity/print" => vec![
+                            encode_sentence(&["!re", &tag_word, "=name=R1"]),
+                            encode_sentence(&["!done", &tag_word]),
+                        ],
+                        "/system/resource/print" => vec![
+                            encode_sentence(&["!re", &tag_word, "=uptime=1m"]),
+                            encode_sentence(&["!done", &tag_word]),
+                        ],
+                        "/interface/print" | "/ip/address/print" => {
+                            vec![encode_sentence(&["!done", &tag_word])]
+                        }
+                        _ => vec![encode_sentence(&["!done", &tag_word])],
+                    }
+                }
+            });
+
+            let connector = Arc::new(MockConnector::new(client_io));
+            let driver = RouterDriver::new(connector);
+            let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+            let server = MkMcpServer::new(safety, driver);
+
+            let res = server
+                .get_overview()
+                .await
+                .expect("tool error returns CallToolResult");
+            assert_tool_error(res, "simulated failure");
+        }
+
+        // Identity row present without =name should still succeed via fallback
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _task = spawn_custom_router(server_io, |cmd, _words, tag_word| async move {
+            match cmd.as_str() {
+                "/system/identity/print" => vec![
+                    encode_sentence(&["!re", &tag_word, "=other=value"]),
+                    encode_sentence(&["!done", &tag_word]),
+                ],
+                "/system/resource/print" => vec![
+                    encode_sentence(&["!re", &tag_word, "=board-name=CHR"]),
+                    encode_sentence(&["!done", &tag_word]),
+                ],
+                _ => vec![encode_sentence(&["!done", &tag_word])],
+            }
+        });
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+        let res = server
+            .get_overview()
+            .await
+            .expect("overview succeeds without identity name");
+        let text = serde_json::to_string(&res.content).unwrap();
+        assert!(text.contains("CHR"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_inspect_categories_docs_and_trap() {
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _task = spawn_custom_router(server_io, |cmd, words, tag_word| async move {
+            if cmd != "/console/inspect" {
+                return vec![encode_sentence(&["!done", &tag_word])];
+            }
+            let is_syntax = words.iter().any(|w| w == "=request=syntax");
+            let is_fail_path = words.iter().any(|w| w == "=path=bad,path");
+            if is_fail_path {
+                return vec![
+                    encode_sentence(&["!trap", &tag_word, "=message=no such path"]),
+                    encode_sentence(&["!done", &tag_word]),
+                ];
+            }
+            if is_syntax {
+                vec![
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=syntax",
+                        "=symbol=address",
+                        "=text=",
+                    ]),
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=syntax",
+                        "=symbol=firewall",
+                        "=text=   ",
+                    ]),
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=syntax",
+                        "=symbol=where",
+                        "=text=Filter expression",
+                    ]),
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=syntax",
+                        "=symbol=print",
+                        "=text=Display entries",
+                    ]),
+                    encode_sentence(&["!done", &tag_word]),
+                ]
+            } else {
+                vec![
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=child",
+                        "=node-type=dir",
+                        "=name=address",
+                    ]),
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=child",
+                        "=node-type=path",
+                        "=name=firewall",
+                    ]),
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=child",
+                        "=node-type=cmd",
+                        "=name=print",
+                    ]),
+                    encode_sentence(&[
+                        "!re",
+                        &tag_word,
+                        "=type=child",
+                        "=node-type=arg",
+                        "=name=where",
+                    ]),
+                    encode_sentence(&["!re", &tag_word, "=type=child", "=node-type=dir"]),
+                    encode_sentence(&["!done", &tag_word]),
+                ]
+            }
+        });
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let res = server
+            .routeros_inspect(Parameters(InspectArgs {
+                path: Some("ip".into()),
+                include_docs: true,
+            }))
+            .await
+            .expect("inspect succeeds");
+        assert_ne!(res.is_error, Some(true));
+        let text = serde_json::to_string(&res.content).unwrap();
+        assert!(text.contains("address"));
+        assert!(text.contains("firewall"));
+        assert!(text.contains("print"));
+        assert!(text.contains("where"));
+        assert!(text.contains("Filter expression"));
+        assert!(text.contains("Display entries"));
+
+        let err_res = server
+            .routeros_inspect(Parameters(InspectArgs {
+                path: Some("bad/path".into()),
+                include_docs: false,
+            }))
+            .await
+            .expect("tool error returns CallToolResult");
+        assert_tool_error(err_res, "no such path");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_exec_error_and_task_edge_paths() {
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _task = spawn_custom_router(server_io, |_cmd, _words, tag_word| async move {
+            vec![
+                encode_sentence(&["!trap", &tag_word, "=message=bad command"]),
+                encode_sentence(&["!done", &tag_word]),
+            ]
+        });
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        // Missing both command and task_id
+        let res = server
+            .routeros_exec(Parameters(ExecArgs::default()))
+            .await
+            .expect("tool error returns CallToolResult");
+        assert_tool_error(res, "command");
+
+        // Poll missing task
+        let res = server
+            .routeros_exec(Parameters(ExecArgs {
+                task_id: Some("missing-task".into()),
+                task_action: Some(crate::mcp::TaskAction::Poll),
+                ..Default::default()
+            }))
+            .await
+            .expect("tool error returns CallToolResult");
+        assert_tool_error(res, "missing-task");
+
+        // Cancel missing task
+        let res = server
+            .routeros_exec(Parameters(ExecArgs {
+                task_id: Some("missing-task".into()),
+                task_action: Some(crate::mcp::TaskAction::Cancel),
+                ..Default::default()
+            }))
+            .await
+            .expect("tool error returns CallToolResult");
+        assert_tool_error(res, "missing-task");
+
+        // Router !trap on non-streaming command
+        let res = server
+            .routeros_exec(Parameters(ExecArgs {
+                command: Some("/system/identity/print".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect("tool error returns CallToolResult");
+        assert_tool_error(res, "bad command");
+
+        // Stream start failure when connector has no stream left (QueueMockConnector empty -> EndOfStream)
+        let disconnected_connector = Arc::new(QueueMockConnector::new(std::iter::empty()));
+        let server_disc = MkMcpServer::new(
+            Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier)),
+            RouterDriver::new(disconnected_connector),
+        );
+        let res = server_disc
+            .routeros_exec(Parameters(ExecArgs {
+                command: Some("/interface/listen".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect("tool error returns CallToolResult");
+        assert_eq!(res.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_batch_edge_paths_and_server_info() {
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _task = spawn_custom_router(server_io, |cmd, _words, tag_word| async move {
+            match cmd.as_str() {
+                "/system/identity/print" => vec![
+                    encode_sentence(&["!re", &tag_word, "=name=BatchRouter"]),
+                    encode_sentence(&["!done", &tag_word]),
+                ],
+                "/ip/route/print" => vec![
+                    encode_sentence(&["!trap", &tag_word, "=message=route trap"]),
+                    encode_sentence(&["!done", &tag_word]),
+                ],
+                _ => vec![encode_sentence(&["!done", &tag_word])],
+            }
+        });
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        // ServerHandler::get_info smoke check
+        let info = rmcp::ServerHandler::get_info(&server);
+        assert!(info.capabilities.tools.is_some());
+        assert!(info.instructions.as_deref().is_some_and(|s| !s.is_empty()));
+
+        // Empty batch requests
+        let empty_err = server
+            .routeros_batch(Parameters(BatchArgs { requests: vec![] }))
+            .await;
+        assert!(
+            empty_err.is_err() || empty_err.as_ref().is_ok_and(|r| r.is_error == Some(true)),
+            "empty batch requests should fail: {empty_err:?}"
+        );
+
+        // Batch containing duplicate commands without id, a streaming item error, a trap, and a valid read
+        let res = server
+            .routeros_batch(Parameters(BatchArgs {
+                requests: vec![
+                    BatchCommandItem {
+                        command: "/system/identity/print".into(),
+                        ..Default::default()
+                    },
+                    BatchCommandItem {
+                        command: "/system/identity/print".into(),
+                        ..Default::default()
+                    },
+                    BatchCommandItem {
+                        id: Some("stream".into()),
+                        command: "/interface/listen".into(),
+                        ..Default::default()
+                    },
+                    BatchCommandItem {
+                        id: Some("trap".into()),
+                        command: "/ip/route/print".into(),
+                        ..Default::default()
+                    },
+                ],
+            }))
+            .await
+            .expect("batch returns mixed per-item result map");
+        let text = serde_json::to_string(&res.content).unwrap();
+        assert!(text.contains("BatchRouter"));
+        assert!(text.contains("#2"));
+        assert!(text.contains("route trap"));
+    }
 }

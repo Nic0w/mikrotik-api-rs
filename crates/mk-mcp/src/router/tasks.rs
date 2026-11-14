@@ -238,4 +238,105 @@ mod tests {
         let snapshot2 = registry.poll_task(&task_id, false).expect("task exists");
         assert_eq!(snapshot2.events.len(), 0);
     }
+
+    #[tokio::test]
+    async fn test_task_registry_ring_buffer_overflow_and_non_draining_poll() {
+        let registry = TaskRegistry::new();
+        let total = MAX_BUFFERED_EVENTS_PER_TASK + 25;
+        let events: Vec<Response<Row>> = (0..total)
+            .map(|i| {
+                let mut row = Row::new();
+                row.insert("seq".into(), i.to_string());
+                Response::Reply(row)
+            })
+            .collect();
+
+        let task_id = registry.spawn_stream_task(
+            "/interface/listen".into(),
+            42,
+            futures::stream::iter(events),
+        );
+
+        // Wait until stream finishes
+        let mut status = TaskStatus::Working;
+        for _ in 0..50 {
+            if let Some(snap) = registry.poll_task(&task_id, false) {
+                status = snap.status;
+                if status != TaskStatus::Working {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(status, TaskStatus::Completed);
+
+        // Non-draining poll leaves all buffered events intact
+        let peek = registry.poll_task(&task_id, false).expect("task exists");
+        assert_eq!(peek.events.len(), MAX_BUFFERED_EVENTS_PER_TASK);
+        assert_eq!(peek.dropped_events, 25);
+        assert_eq!(peek.events[0].get("seq").map(String::as_str), Some("25"));
+
+        // Draining poll returns them and clears buffer
+        let drained = registry.poll_task(&task_id, true).expect("task exists");
+        assert_eq!(drained.events.len(), MAX_BUFFERED_EVENTS_PER_TASK);
+        let after = registry.poll_task(&task_id, true).expect("task exists");
+        assert!(after.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_task_registry_trap_fatal_done_and_cancel_finished() {
+        let registry = TaskRegistry::new();
+
+        // Response::Trap -> Failed with trap message
+        let trap_id = registry.spawn_stream_task(
+            "/log/listen".into(),
+            1,
+            futures::stream::iter(vec![Response::Trap {
+                category: Some(mikrotik_api::TrapCategory::GeneralFailure),
+                message: "stream trapped".into(),
+            }]),
+        );
+
+        // Response::Fatal -> Failed
+        let fatal_id = registry.spawn_stream_task(
+            "/log/listen".into(),
+            2,
+            futures::stream::iter(vec![Response::<Row>::Fatal]),
+        );
+
+        // Explicit Response::Done -> Completed
+        let done_id = registry.spawn_stream_task(
+            "/log/listen".into(),
+            3,
+            futures::stream::iter(vec![Response::<Row>::Done]),
+        );
+
+        for _ in 0..50 {
+            let s1 = registry.poll_task(&trap_id, false).unwrap().status;
+            let s2 = registry.poll_task(&fatal_id, false).unwrap().status;
+            let s3 = registry.poll_task(&done_id, false).unwrap().status;
+            if s1 != TaskStatus::Working && s2 != TaskStatus::Working && s3 != TaskStatus::Working {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let trap_snap = registry.poll_task(&trap_id, false).unwrap();
+        assert_eq!(trap_snap.status, TaskStatus::Failed);
+        assert!(trap_snap
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("stream trapped")));
+
+        let fatal_snap = registry.poll_task(&fatal_id, false).unwrap();
+        assert_eq!(fatal_snap.status, TaskStatus::Failed);
+        assert!(fatal_snap.error.is_some());
+
+        let done_snap = registry.poll_task(&done_id, false).unwrap();
+        assert_eq!(done_snap.status, TaskStatus::Completed);
+
+        // mark_cancelling on already-finished or missing task returns None
+        assert!(registry.mark_cancelling(&done_id).is_none());
+        assert!(registry.mark_cancelling("does-not-exist").is_none());
+    }
 }

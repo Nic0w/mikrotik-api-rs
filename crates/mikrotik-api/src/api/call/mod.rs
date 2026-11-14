@@ -576,4 +576,80 @@ mod tests {
         let result: Result<Item, crate::api::Error> = res.into();
         assert!(matches!(result, Err(crate::api::Error::Remote(msg)) if msg == "interrupted"));
     }
+
+    #[tokio::test]
+    async fn test_array_list_call_trap_and_disconnect_edge_cases() {
+        use super::array::ArrayListCall;
+
+        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+        struct Item {
+            count: u32,
+        }
+
+        // 1. Trailing !re after Err preserves original Err, but !trap overwrites Err
+        let call = ArrayListCall::<Item>::new();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(call.clone());
+
+        let err = caller.push_reply(vec![
+            "!re".to_string(),
+            "=count=not_a_number".to_string(),
+            ".tag=1".to_string(),
+            "".to_string(),
+        ]);
+        assert!(matches!(err, Err(CallError::BadSentence(_))));
+        // Trailing !re after Err must not panic or overwrite Err
+        caller
+            .push_reply(vec![
+                "!re".to_string(),
+                "=count=42".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+        // Trap overwrites existing DeserializerError
+        caller
+            .push_reply(vec![
+                "!trap".to_string(),
+                "=message=router aborted".to_string(),
+                ".tag=1".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+        caller.done(vec!["!done".to_string()]).unwrap();
+
+        let replies = call.await.expect("should resolve with Trap entry");
+        assert_eq!(replies.len(), 1);
+        assert!(matches!(
+            &replies[0],
+            Response::Trap { message, .. } if message == "router aborted"
+        ));
+
+        // 2. disconnect() on ArrayListCall pushes Fatal and wakes future
+        let call2 = ArrayListCall::<Item>::new();
+        let mut caller2: Box<dyn AsyncCall + Send + Sync> = Box::new(call2.clone());
+        caller2.disconnect();
+        let replies2 = call2.await.expect("disconnect returns Ok vec with Fatal");
+        assert_eq!(replies2, vec![Response::Fatal]);
+
+        // 3. Oneshot disconnect() before any reply turns None into Fatal
+        let oneshot = OneShotCall::<Item>::new();
+        let mut oneshot_caller: Box<dyn AsyncCall + Send + Sync> = Box::new(oneshot.clone());
+        oneshot_caller.disconnect();
+        assert_eq!(oneshot.await.unwrap(), Response::Fatal);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_call_default_and_disconnect_sends_fatal_then_ends() {
+        use super::streaming::StreamingCall;
+        use futures::StreamExt;
+
+        let mut stream = StreamingCall::<()>::default();
+        let mut caller: Box<dyn AsyncCall + Send + Sync> = Box::new(stream.clone());
+        caller.disconnect();
+
+        let first = stream.next().await;
+        assert_eq!(first, Some(Response::Fatal));
+        let second = stream.next().await;
+        assert_eq!(second, None);
+    }
 }

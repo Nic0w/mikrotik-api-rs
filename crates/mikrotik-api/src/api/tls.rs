@@ -320,4 +320,60 @@ mod tests {
         let res = verifier.verify_server_cert(&fake_cert, &[], &server_name, &[], UnixTime::now());
         assert!(res.is_ok());
     }
+
+    #[test]
+    fn test_tls_config_add_ca_cert_file_and_empty_roots_errors() {
+        let missing = TlsConfig::builder().add_ca_cert_file("/nonexistent/does-not-exist.pem");
+        assert!(missing.is_err());
+
+        // Valid existing file load
+        let tmp_dir = std::env::temp_dir();
+        let tmp_path = tmp_dir.join(format!("mk_api_test_ca_{}.pem", std::process::id()));
+        std::fs::write(&tmp_path, b"dummy pem bytes").unwrap();
+        let loaded = TlsConfig::builder()
+            .add_ca_cert_file(&tmp_path)
+            .expect("should read existing file")
+            .build();
+        let _ = std::fs::remove_file(&tmp_path);
+        assert_eq!(loaded.ca_certs, vec![b"dummy pem bytes".to_vec()]);
+
+        // Empty cert store when both native and webpki roots are disabled still builds a valid ClientConfig
+        let empty_store_cfg = TlsConfig::builder()
+            .danger_accept_invalid_certs(false)
+            .use_native_roots(false)
+            .use_webpki_roots(false)
+            .build();
+        assert!(create_client_config(&empty_store_cfg).is_ok());
+
+        // Malformed base64 inside PEM block triggers parse error
+        let bad_pem_cfg = TlsConfig::builder()
+            .danger_accept_invalid_certs(false)
+            .use_native_roots(false)
+            .use_webpki_roots(false)
+            .add_ca_cert_pem(
+                b"-----BEGIN CERTIFICATE-----\n!!!invalid-base64!!!\n-----END CERTIFICATE-----\n"
+                    .to_vec(),
+            )
+            .build();
+        let bad_pem_res = create_client_config(&bad_pem_cfg);
+        assert!(matches!(
+            bad_pem_res,
+            Err(Error::Tls(msg)) if msg.contains("failed to parse CA certificate PEM")
+        ));
+
+        // Structurally valid base64 in PEM but invalid X.509 DER triggers root_store.add error
+        let bad_der_cfg = TlsConfig::builder()
+            .danger_accept_invalid_certs(false)
+            .use_native_roots(false)
+            .use_webpki_roots(false)
+            .add_ca_cert_pem(
+                b"-----BEGIN CERTIFICATE-----\nAQIDBA==\n-----END CERTIFICATE-----\n".to_vec(),
+            )
+            .build();
+        let bad_der_res = create_client_config(&bad_der_cfg);
+        assert!(matches!(
+            bad_der_res,
+            Err(Error::Tls(msg)) if msg.contains("invalid CA certificate")
+        ));
+    }
 }

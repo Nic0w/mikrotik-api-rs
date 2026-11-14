@@ -213,4 +213,77 @@ mod tests {
             assert!(config.danger_accept_invalid_certs);
         }
     }
+
+    #[test]
+    fn test_trap_category_roundtrip_and_error_display_coverage() {
+        use serde::Deserialize;
+        use std::sync::Arc;
+
+        // TrapCategory 0..=7 and Other(u8) deserialize + u8::from roundtrip
+        let expected = [
+            (0u8, TrapCategory::MissingItemOrCommand),
+            (1, TrapCategory::ArgumentValueFailure),
+            (2, TrapCategory::CommandExecutionInterrupted),
+            (3, TrapCategory::ScriptingFailure),
+            (4, TrapCategory::GeneralFailure),
+            (5, TrapCategory::APIFailure),
+            (6, TrapCategory::TTYFailure),
+            (7, TrapCategory::ReturnValue),
+            (42, TrapCategory::Other(42)),
+        ];
+        for (raw, variant) in expected {
+            let de = TrapCategory::deserialize(
+                serde::de::IntoDeserializer::<DeserializerError>::into_deserializer(raw),
+            )
+            .expect("trap category u8 deserialize");
+            assert_eq!(de, variant);
+            assert_eq!(u8::from(de), raw);
+        }
+
+        // All Error::Display variants + From<io::Error>
+        assert_eq!(Error::Incomplete.to_string(), "not enough data");
+        assert_eq!(Error::EndOfStream.to_string(), "reached EOF");
+        assert_eq!(
+            Error::EmptyResponse.to_string(),
+            "empty response from router"
+        );
+        assert_eq!(
+            Error::Remote("boom".into()).to_string(),
+            "error from router: boom"
+        );
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe broken");
+        let converted_io: Error = io_err.into();
+        assert!(converted_io.to_string().contains("pipe broken"));
+        assert_eq!(
+            Error::InvalidWordLength(0xf5).to_string(),
+            "invalid word length prefix byte: 0xf5"
+        );
+        assert_eq!(
+            Error::Tls("bad cert".into()).to_string(),
+            "tls error: bad cert"
+        );
+
+        // All DeserializerError::Display variants
+        assert_eq!(
+            DeserializerError::MissingWord.to_string(),
+            "missing word to finish the sentence"
+        );
+        assert_eq!(
+            DeserializerError::MissingKey.to_string(),
+            "failed to parse key from current word"
+        );
+        assert_eq!(
+            DeserializerError::MissingValue.to_string(),
+            "failed to parse value from current word"
+        );
+        let parse_err = "abc".parse::<u32>().unwrap_err();
+        let bad_prim = DeserializerError::BadPrimitiveValue(Arc::new(parse_err));
+        assert!(!bad_prim.to_string().is_empty());
+        assert_eq!(
+            DeserializerError::custom("custom msg").to_string(),
+            "custom msg"
+        );
+        let serde_custom: DeserializerError = serde::de::Error::custom("serde custom");
+        assert_eq!(serde_custom.to_string(), "serde custom");
+    }
 }
