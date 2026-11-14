@@ -35,7 +35,7 @@ struct Identity {
     pub name: String,
 }
 
-pub async fn identify(api: &MikrotikAPI<Authenticated>, resources: bool) {
+pub async fn identify(api: &MikrotikAPI<Authenticated>, resources: bool) -> Result<(), ()> {
     let identity = match api
         .generic_oneshot_call::<Identity>("/system/identity/print", None)
         .await
@@ -43,7 +43,7 @@ pub async fn identify(api: &MikrotikAPI<Authenticated>, resources: bool) {
         Ok(id) => id,
         Err(e) => {
             eprintln!("Failed to fetch router identity: {}", e);
-            return;
+            return Err(());
         }
     };
 
@@ -52,7 +52,12 @@ pub async fn identify(api: &MikrotikAPI<Authenticated>, resources: bool) {
     if resources {
         match api.system_resources().await {
             Ok(res) => println!("{}", PrettyResources(res)),
-            Err(e) => eprintln!("Failed to fetch system resources: {}", e),
+            Err(e) => {
+                eprintln!("Failed to fetch system resources: {}", e);
+                return Err(());
+            }
         }
     }
+
+    Ok(())
 }
