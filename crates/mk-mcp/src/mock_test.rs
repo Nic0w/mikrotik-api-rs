@@ -7,7 +7,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
     use crate::{
-        mcp::{ExecArgs, InspectArgs, MkMcpServer, PaginatedRows, DEFAULT_EXEC_LIMIT},
+        mcp::{
+            BatchArgs, BatchCommandItem, ExecArgs, InspectArgs, MkMcpServer, PaginatedRows,
+            DEFAULT_EXEC_LIMIT,
+        },
         router::{BoxFuture, RouterConnector, RouterDriver},
         safety::{PolicyMode, RuleClassifier, SafetyGate},
     };
@@ -668,5 +671,105 @@ mod tests {
         assert_eq!(page.returned_count, 1);
         assert!(!page.truncated);
         assert_eq!(page.rows[0].get(".id").map(String::as_str), Some("*5"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_batch_concurrent_reads() {
+        let (client_io, server_io) = tokio::io::duplex(32768);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = BatchArgs {
+            requests: vec![
+                BatchCommandItem {
+                    command: "/system/identity/print".into(),
+                    ..Default::default()
+                },
+                BatchCommandItem {
+                    id: Some("ifaces".into()),
+                    command: "/interface/print".into(),
+                    proplist: vec!["name".into(), "type".into()],
+                    ..Default::default()
+                },
+                BatchCommandItem {
+                    command: "/ip/address/print".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let result = server
+            .routeros_batch(Parameters(args))
+            .await
+            .expect("batch succeeds");
+        assert_ne!(result.is_error, Some(true));
+
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .as_str();
+        let val: serde_json::Value = serde_json::from_str(text).expect("valid JSON");
+        let results = val.get("results").expect("results map");
+        assert_eq!(
+            results["/system/identity/print"][0]["name"],
+            serde_json::json!("Test-Router")
+        );
+        assert_eq!(results["ifaces"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            results["/ip/address/print"][0]["address"],
+            serde_json::json!("192.168.88.1/24")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_batch_mixed_policy_denial() {
+        let (client_io, server_io) = tokio::io::duplex(32768);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadWrite, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = BatchArgs {
+            requests: vec![
+                BatchCommandItem {
+                    command: "/system/identity/print".into(),
+                    ..Default::default()
+                },
+                BatchCommandItem {
+                    command: "/system/reset-configuration".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let result = server
+            .routeros_batch(Parameters(args))
+            .await
+            .expect("batch returns structured result");
+        assert_ne!(result.is_error, Some(true));
+
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .as_str();
+        let val: serde_json::Value = serde_json::from_str(text).expect("valid JSON");
+        let results = val.get("results").expect("results map");
+        assert_eq!(
+            results["/system/identity/print"][0]["name"],
+            serde_json::json!("Test-Router")
+        );
+        let err_msg = results["/system/reset-configuration"]["error"]
+            .as_str()
+            .expect("error string for denied command");
+        assert!(err_msg.contains("Safety Policy Denied"));
+        assert!(err_msg.contains("DangerousWrite"));
     }
 }
