@@ -7,7 +7,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
     use crate::{
-        mcp::{ExecArgs, InspectArgs, MkMcpServer},
+        mcp::{ExecArgs, InspectArgs, MkMcpServer, PaginatedRows, DEFAULT_EXEC_LIMIT},
         router::{BoxFuture, RouterConnector, RouterDriver},
         safety::{PolicyMode, RuleClassifier, SafetyGate},
     };
@@ -232,6 +232,16 @@ mod tests {
                         let _ = server_io.write_all(&re).await;
                         let _ = server_io.write_all(&done).await;
                     }
+                    "/ip/route/print" => {
+                        for i in 0..150 {
+                            let id = format!("=.id=*{i}");
+                            let dst = format!("=dst-address=10.0.{}.0/24", i % 256);
+                            let re = encode_sentence(&["!re", &tag_word, &id, &dst]);
+                            let _ = server_io.write_all(&re).await;
+                        }
+                        let done = encode_sentence(&["!done", &tag_word]);
+                        let _ = server_io.write_all(&done).await;
+                    }
                     other => {
                         let trap = encode_sentence(&[
                             "!trap",
@@ -305,12 +315,8 @@ mod tests {
 
         let args = ExecArgs {
             command: Some("/interface/print".into()),
-            attributes: Default::default(),
-            query: Default::default(),
             proplist: vec!["name".into(), "type".into()],
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -336,12 +342,7 @@ mod tests {
 
         let args = ExecArgs {
             command: Some("/system/reset-configuration".into()),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -368,12 +369,8 @@ mod tests {
         // 1. Start streaming task
         let start_args = ExecArgs {
             command: Some("/log/listen".into()),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
             as_task: true,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let start_res = server
@@ -389,13 +386,9 @@ mod tests {
 
         // 2. Poll task
         let poll_args = ExecArgs {
-            command: None,
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
             task_id: Some("task-1".into()),
             task_action: Some(crate::mcp::TaskAction::Poll),
+            ..Default::default()
         };
 
         let poll_res = server
@@ -408,13 +401,9 @@ mod tests {
 
         // 3. Cancel task
         let cancel_args = ExecArgs {
-            command: None,
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
             task_id: Some("task-1".into()),
             task_action: Some(crate::mcp::TaskAction::Cancel),
+            ..Default::default()
         };
 
         let cancel_res = server
@@ -437,12 +426,7 @@ mod tests {
         // Test CLI-style invocation with spaces and "detail" modifier
         let args = ExecArgs {
             command: Some("/ip/address print detail".into()),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -500,12 +484,7 @@ mod tests {
                 r#"/ip/firewall/filter/add action=accept chain=input dst-port=1337 protocol=tcp connection-state=new comment="Allow incoming IPv4 traffic on port 1337" log=yes priority=1"#
                     .into(),
             ),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -518,5 +497,83 @@ mod tests {
         assert!(json_text.contains("Allow incoming IPv4 traffic on port 1337"));
         assert!(json_text.contains("1337"));
         assert!(json_text.contains("accept"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_exec_default_truncation() {
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = ExecArgs {
+            command: Some("/ip/route/print".into()),
+            ..Default::default()
+        };
+
+        let result = server
+            .routeros_exec(Parameters(args))
+            .await
+            .expect("exec succeeds");
+        assert_ne!(result.is_error, Some(true));
+
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .as_str();
+        let page: PaginatedRows = serde_json::from_str(text).expect("valid PaginatedRows JSON");
+        assert_eq!(page.total_count, 150);
+        assert_eq!(page.returned_count, DEFAULT_EXEC_LIMIT);
+        assert_eq!(page.offset, 0);
+        assert!(page.truncated);
+        assert!(page
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Output truncated"));
+        assert_eq!(page.rows.len(), DEFAULT_EXEC_LIMIT);
+        assert_eq!(page.rows[0].get(".id").map(String::as_str), Some("*0"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_routeros_exec_explicit_pagination() {
+        let (client_io, server_io) = tokio::io::duplex(16384);
+        let _server_task = spawn_mock_router(server_io);
+
+        let connector = Arc::new(MockConnector::new(client_io));
+        let driver = RouterDriver::new(connector);
+        let safety = Arc::new(SafetyGate::new(PolicyMode::ReadOnly, RuleClassifier));
+        let server = MkMcpServer::new(safety, driver);
+
+        let args = ExecArgs {
+            command: Some("/interface/print".into()),
+            limit: Some(1),
+            offset: Some(1),
+            ..Default::default()
+        };
+
+        let result = server
+            .routeros_exec(Parameters(args))
+            .await
+            .expect("exec succeeds");
+        assert_ne!(result.is_error, Some(true));
+
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .as_str();
+        let page: PaginatedRows = serde_json::from_str(text).expect("valid PaginatedRows JSON");
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.returned_count, 1);
+        assert_eq!(page.offset, 1);
+        assert!(!page.truncated);
+        assert!(page.message.is_none());
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].get("name").map(String::as_str), Some("bridge"));
     }
 }

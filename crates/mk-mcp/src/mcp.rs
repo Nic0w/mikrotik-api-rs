@@ -38,8 +38,11 @@ pub enum TaskAction {
     Cancel,
 }
 
+/// Default maximum number of rows returned by `routeros_exec` when `limit` is omitted.
+pub const DEFAULT_EXEC_LIMIT: usize = 100;
+
 /// Arguments for `routeros_exec` tool.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct ExecArgs {
     /// Full RouterOS command path (e.g. "/ip/address/print", "/ip/dhcp-server/print", "/ping", "/log/listen").
     #[serde(default)]
@@ -53,6 +56,12 @@ pub struct ExecArgs {
     /// Specific property fields to retrieve (e.g. ["name", "mac-address", "running"]).
     #[serde(default)]
     pub proplist: Vec<String>,
+    /// Maximum number of records to return (defaults to 100).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Number of records to skip for pagination (defaults to 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
     /// Run as a background streaming MCP Task (automatic for */listen commands).
     #[serde(default)]
     pub as_task: bool,
@@ -62,6 +71,56 @@ pub struct ExecArgs {
     /// Action to execute on `task_id` (poll or cancel).
     #[serde(default)]
     pub task_action: Option<TaskAction>,
+}
+
+/// Paginated response container for `routeros_exec` queries when truncation or pagination occurs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PaginatedRows {
+    /// Total number of matching rows before pagination.
+    pub total_count: usize,
+    /// Number of rows returned in this page.
+    pub returned_count: usize,
+    /// Starting row offset applied.
+    pub offset: usize,
+    /// Whether additional rows were omitted due to the limit.
+    pub truncated: bool,
+    /// Guidance message when results are truncated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Returned data rows.
+    pub rows: Vec<Row>,
+}
+
+fn format_exec_rows(
+    rows: Vec<Row>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ContentBlock, McpError> {
+    let total_count = rows.len();
+    let offset_val = offset.unwrap_or(0);
+    let limit_val = limit.unwrap_or(DEFAULT_EXEC_LIMIT);
+
+    let paged_rows: Vec<Row> = rows.into_iter().skip(offset_val).take(limit_val).collect();
+    let returned_count = paged_rows.len();
+    let truncated = offset_val.saturating_add(returned_count) < total_count;
+
+    if truncated || limit.is_some() || offset.is_some() {
+        let message = truncated.then(|| {
+            format!(
+                "Output truncated: showing {returned_count} of {total_count} rows (offset {offset_val}). Narrow results with 'proplist', 'filter'/'query', or paginate with 'offset' and 'limit'."
+            )
+        });
+        ContentBlock::json(PaginatedRows {
+            total_count,
+            returned_count,
+            offset: offset_val,
+            truncated,
+            message,
+            rows: paged_rows,
+        })
+    } else {
+        ContentBlock::json(paged_rows)
+    }
 }
 
 /// Item metadata discovered via `/console/inspect`.
@@ -442,7 +501,7 @@ impl MkMcpServer {
             }
         } else {
             match self.driver.execute(authorized).await {
-                Ok(rows) => match ContentBlock::json(rows) {
+                Ok(rows) => match format_exec_rows(rows, args.limit, args.offset) {
                     Ok(b) => Ok(CallToolResult::success(vec![b])),
                     Err(e) => Err(e),
                 },
