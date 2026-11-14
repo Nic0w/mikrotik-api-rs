@@ -180,7 +180,8 @@ mod tests {
 
         // Verify TrapCategory is publicly accessible and usable
         let category = TrapCategory::ArgumentValueFailure;
-        assert_eq!(category as u8, 1);
+        assert_eq!(u8::from(category), 1);
+        assert_eq!(u8::from(TrapCategory::Other(99)), 99);
         let resp: Response<()> = Response::Trap {
             category: Some(TrapCategory::MissingItemOrCommand),
             message: "no such item".to_string(),
