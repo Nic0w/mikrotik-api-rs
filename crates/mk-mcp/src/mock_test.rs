@@ -305,12 +305,8 @@ mod tests {
 
         let args = ExecArgs {
             command: Some("/interface/print".into()),
-            attributes: Default::default(),
-            query: Default::default(),
             proplist: vec!["name".into(), "type".into()],
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -336,12 +332,7 @@ mod tests {
 
         let args = ExecArgs {
             command: Some("/system/reset-configuration".into()),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -368,12 +359,8 @@ mod tests {
         // 1. Start streaming task
         let start_args = ExecArgs {
             command: Some("/log/listen".into()),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
             as_task: true,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let start_res = server
@@ -389,13 +376,9 @@ mod tests {
 
         // 2. Poll task
         let poll_args = ExecArgs {
-            command: None,
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
             task_id: Some("task-1".into()),
             task_action: Some(crate::mcp::TaskAction::Poll),
+            ..Default::default()
         };
 
         let poll_res = server
@@ -408,13 +391,9 @@ mod tests {
 
         // 3. Cancel task
         let cancel_args = ExecArgs {
-            command: None,
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
             task_id: Some("task-1".into()),
             task_action: Some(crate::mcp::TaskAction::Cancel),
+            ..Default::default()
         };
 
         let cancel_res = server
@@ -437,12 +416,7 @@ mod tests {
         // Test CLI-style invocation with spaces and "detail" modifier
         let args = ExecArgs {
             command: Some("/ip/address print detail".into()),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
@@ -500,12 +474,7 @@ mod tests {
                 r#"/ip/firewall/filter/add action=accept chain=input dst-port=1337 protocol=tcp connection-state=new comment="Allow incoming IPv4 traffic on port 1337" log=yes priority=1"#
                     .into(),
             ),
-            attributes: Default::default(),
-            query: Default::default(),
-            proplist: Default::default(),
-            as_task: false,
-            task_id: None,
-            task_action: None,
+            ..Default::default()
         };
 
         let result = server
