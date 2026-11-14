@@ -188,7 +188,7 @@ pub struct ActiveUserRaw {
 }
 
 /// An event to describe user activity in terms of logins and logouts
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveUser {
     /// Logout event, the String being the relative id of the user who logged out.
     Dead(String),
@@ -204,14 +204,14 @@ pub enum ActiveUser {
         /// Username
         name: String,
 
-        /// IP address from which the connection originates from
-        address: String,
+        /// IP address from which the connection originates (omitted for serial/local console)
+        address: Option<String>,
 
         /// Mean of accessing admin interface: ssh, web, ...
         via: String,
 
         /// User group, as in which rights the user has on the system
-        group: String,
+        group: Option<String>,
 
         /// Is the user authenticated through RADIUS (?)
         radius: bool,
@@ -232,14 +232,10 @@ impl<'de> Deserialize<'de> for ActiveUser {
         let id = raw.id;
         let when = raw.when.ok_or_else(|| de::Error::missing_field("when"))?;
         let name = raw.name.ok_or_else(|| de::Error::missing_field("name"))?;
-        let address = raw
-            .address
-            .ok_or_else(|| de::Error::missing_field("address"))?;
+        let address = raw.address;
         let via = raw.via.ok_or_else(|| de::Error::missing_field("via"))?;
-        let group = raw.group.ok_or_else(|| de::Error::missing_field("group"))?;
-        let radius = raw
-            .radius
-            .ok_or_else(|| de::Error::missing_field("radius"))?;
+        let group = raw.group;
+        let radius = raw.radius.unwrap_or(false);
 
         Ok(ActiveUser::Active {
             id,
@@ -253,13 +249,57 @@ impl<'de> Deserialize<'de> for ActiveUser {
     }
 }
 
-/// Incomplete reply from `/system/interface/listen` command
-/// That may in fact be the same struct as `Interface`
-#[allow(missing_docs)]
-#[derive(Debug, Deserialize)]
+/// Event emitted by `/interface/listen` describing an interface state change or removal.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct InterfaceChange {
+    /// Relative interface ID (e.g., `*1`)
     #[serde(rename = ".id")]
     pub id: String,
+
+    /// True when the interface has been removed (`.dead=true`)
+    #[serde(rename = ".dead", default)]
+    pub is_dead: bool,
+
+    /// Interface name
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Interface type (e.g., `ether`, `bridge`, `wg`)
+    #[serde(rename = "type", default)]
+    pub iface_type: Option<String>,
+
+    /// Configured MTU (`auto` or numeric bytes)
+    #[serde(default)]
+    pub mtu: Option<InterfaceMTU>,
+
+    /// Actual operating MTU in bytes
+    #[serde(default)]
+    pub actual_mtu: Option<u32>,
+
+    /// Timestamp of last link-up event
+    #[serde(alias = "last-link-up-time", default)]
+    pub last_link_up: Option<String>,
+
+    /// Number of link-down transitions
+    #[serde(default)]
+    pub link_downs: Option<u32>,
+
+    /// Whether the interface is currently running
+    #[serde(default)]
+    pub running: Option<bool>,
+
+    /// Whether the interface is enslaved to a bridge/bond
+    #[serde(default)]
+    pub slave: Option<bool>,
+
+    /// Whether the interface is administratively disabled
+    #[serde(default)]
+    pub disabled: Option<bool>,
+
+    /// Optional user comment
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// Reply from `/system/interface/print` command

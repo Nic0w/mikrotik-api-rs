@@ -138,7 +138,10 @@ pub async fn main() {
                         } => {
                             info!(
                                 "User '{}' (id: {}) logged in via {} from {}",
-                                name, id, via, address
+                                name,
+                                id,
+                                via,
+                                address.as_deref().unwrap_or("unknown")
                             );
                         }
                     }
