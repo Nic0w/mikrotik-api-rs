@@ -47,13 +47,11 @@ pub fn deserialize_done_payload<T: de::DeserializeOwned>(sentence: &[String]) ->
         _ => sentence,
     };
 
-    let mut iterator = if has_done_attributes(sentence) {
-        words.iter()
-    } else {
-        [].iter()
-    };
+    let has_attrs = has_done_attributes(sentence);
+    let mut iterator = if has_attrs { words.iter() } else { [].iter() };
 
     let mut deserializer = SentenceDeserializer::new(&mut iterator);
+    deserializer.bare_done = !has_attrs;
 
     T::deserialize(&mut deserializer)
 }
@@ -64,6 +62,7 @@ pub struct SentenceDeserializer<'de> {
     current_word: Option<&'de str>,
     current_key: Option<&'de str>,
     current_value: Option<&'de str>,
+    bare_done: bool,
 }
 
 impl<'de> SentenceDeserializer<'de> {
@@ -75,6 +74,7 @@ impl<'de> SentenceDeserializer<'de> {
             current_word: None,
             current_key: None,
             current_value: None,
+            bare_done: false,
         }
     }
 
@@ -139,7 +139,15 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_str(visitor)
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
+        if self.current_key.is_some() || self.current_value.is_some() {
+            self.deserialize_str(visitor)
+        } else {
+            self.deserialize_map(visitor)
+        }
     }
 
     fn deserialize_struct<V>(
@@ -151,6 +159,10 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
         visitor.visit_map(StructVisitor { de: self })
     }
 
@@ -221,6 +233,8 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        let _ = self.current_key.take();
+        let _ = self.current_value.take();
         visitor.visit_unit()
     }
 
@@ -343,6 +357,10 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
         if self.current_word.is_none()
             && self.current_key.is_none()
             && self.current_value.is_none()
@@ -363,6 +381,10 @@ impl<'de> Deserializer<'de> for &mut SentenceDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        if self.bare_done {
+            return Err(DeserializerError::MissingWord);
+        }
+
         visitor.visit_map(StructVisitor { de: self })
     }
 
@@ -391,7 +413,11 @@ impl<'de, 'v> MapAccess<'de> for StructVisitor<'v, 'de> {
     where
         K: serde::de::DeserializeSeed<'de>,
     {
-        let word = self.de.read_word()?;
+        let word = match self.de.read_word() {
+            Ok(word) => word,
+            Err(DeserializerError::MissingWord) => return Ok(None),
+            Err(e) => return Err(e),
+        };
 
         if word.is_empty() {
             return Ok(None);
@@ -426,7 +452,7 @@ impl<'de, 'v> EnumAccess<'de> for EnumVisitor<'v, 'de> {
         let val = seed.deserialize(&mut *self.de)?;
 
         // Parse the colon separating map key from value.
-        if self.de.current_word.is_some() {
+        if self.de.current_word.take().is_some() {
             Ok((val, self))
         } else {
             Err(DeserializerError::MissingWord)
@@ -452,7 +478,9 @@ impl<'de, 'v> VariantAccess<'de> for EnumVisitor<'v, 'de> {
     where
         V: Visitor<'de>,
     {
-        todo!("EnumVisitor::tuple_variant")
+        Err(de::Error::custom(
+            "tuple variants are not supported in RouterOS sentence protocol",
+        ))
     }
 
     fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
@@ -1255,5 +1283,153 @@ mod tests {
                 message: "custom error".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn test_deserialize_tuple_variant_error() {
+        use crate::DeserializerError;
+
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        enum TupleWrapper {
+            Pair(String, String),
+        }
+
+        let sentence = vec!["=Pair=a".to_string(), "".to_string()];
+        let err = deserialize_sentence::<TupleWrapper>(&sentence).unwrap_err();
+        assert!(matches!(err, DeserializerError::Custom(_)));
+    }
+
+    #[test]
+    fn test_deserialize_flatten_and_internally_tagged() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct WithFlatten {
+            name: String,
+            #[serde(flatten)]
+            extra: HashMap<String, String>,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=name=ether1".to_string(),
+            "=mtu=1500".to_string(),
+            "=comment=uplink".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            deserialize_sentence::<WithFlatten>(&sentence).unwrap(),
+            Response::Reply(WithFlatten {
+                name: "ether1".to_string(),
+                extra: HashMap::from([
+                    ("mtu".to_string(), "1500".to_string()),
+                    ("comment".to_string(), "uplink".to_string()),
+                ]),
+            })
+        );
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(tag = "kind", rename_all = "kebab-case")]
+        enum TaggedEvent {
+            LinkUp { iface: String },
+        }
+
+        let tagged = vec![
+            "!re".to_string(),
+            "=kind=link-up".to_string(),
+            "=iface=ether1".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<TaggedEvent>(&tagged).unwrap(),
+            Response::Reply(TaggedEvent::LinkUp {
+                iface: "ether1".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_deserialize_unit_field_clears_state() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct WithUnitField {
+            marker: (),
+            name: String,
+        }
+
+        let sentence = vec![
+            "!re".to_string(),
+            "=marker=ignored".to_string(),
+            "=name=ether1".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<WithUnitField>(&sentence).unwrap(),
+            Response::Reply(WithUnitField {
+                marker: (),
+                name: "ether1".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_deserialize_slice_without_trailing_empty_word() {
+        use super::deserialize_done_payload;
+        use crate::DeserializerError;
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Item {
+            name: String,
+            mtu: u32,
+        }
+
+        let no_terminator = vec![
+            "!re".to_string(),
+            "=name=ether1".to_string(),
+            "=mtu=1500".to_string(),
+        ];
+        assert_eq!(
+            deserialize_sentence::<Item>(&no_terminator).unwrap(),
+            Response::Reply(Item {
+                name: "ether1".to_string(),
+                mtu: 1500,
+            })
+        );
+
+        let no_terminator_map = deserialize_done_payload::<HashMap<String, String>>(&[
+            "!done".to_string(),
+            "=ret=*1".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(no_terminator_map.get("ret").map(String::as_str), Some("*1"));
+
+        let bare_done_no_terminator = vec!["!done".to_string(), ".tag=1".to_string()];
+        assert!(matches!(
+            deserialize_done_payload::<HashMap<String, String>>(&bare_done_no_terminator),
+            Err(DeserializerError::MissingWord)
+        ));
+    }
+
+    #[test]
+    fn test_response_from_iter_does_not_short_circuit_on_done() {
+        let with_trap = vec![
+            Response::Reply("a"),
+            Response::Done,
+            Response::Trap {
+                category: Some(TrapCategory::GeneralFailure),
+                message: "boom".to_string(),
+            },
+        ];
+        let collected_trap: Response<Vec<&str>> = with_trap.into_iter().collect();
+        assert_eq!(
+            collected_trap,
+            Response::Trap {
+                category: Some(TrapCategory::GeneralFailure),
+                message: "boom".to_string(),
+            }
+        );
+
+        let with_fatal = vec![Response::Reply("a"), Response::Done, Response::Fatal];
+        let collected_fatal: Response<Vec<&str>> = with_fatal.into_iter().collect();
+        assert_eq!(collected_fatal, Response::Fatal);
     }
 }
