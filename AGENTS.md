@@ -133,8 +133,8 @@ let resources = api.system_resources().await?;
   4. The background `event_loop` reads sentences, parses `.tag`, and calls `push_reply()` or `done()` on the registered handler.
 
 ### 4.3 Async Call Abstractions (`src/api/call/`)
-- `OneShotCall<T>`: Implements `Future<Output = Response<T>>`. Used for single-reply commands like `/system/resource/print`.
-- `ArrayListCall<T>`: Implements `Future<Output = Vec<Response<T>>>`. Collects multiple `!re` replies into a `Vec` until `!done`.
+- `OneShotCall<T>`: Implements `Future<Output = Result<Response<T>, DeserializerError>>`. Used for single-reply commands like `/system/resource/print`.
+- `ArrayListCall<T>`: Implements `Future<Output = Result<Vec<Response<T>>, DeserializerError>>`. Collects multiple `!re` replies into a `Vec` until `!done`.
 - `StreamingCall<T>`: Implements `futures::Stream<Item = Response<T>>`. Powered by an unbounded Tokio `mpsc` channel. Emits items as `!re` arrives; returns `None` on `!done`.
 - `EmptyCall`: Type alias for `OneShotCall<()>`. Used for `/login` and `/cancel`.
 
@@ -197,16 +197,14 @@ Previously, completed calls were never removed from `SharedTagMap` in `event_loo
 ### 4. [RESOLVED] Failing Doctests in `src/lib.rs`
 The code blocks in `src/lib.rs` documentation were updated with valid imports and async runners, verified by `cargo test --doc`.
 
-### 5. Dead / Abandoned Files
-- `src/api/blocking/de.rs`: Not exposed or used anywhere in the codebase. Contains leftover debugging prints (`println!("prout")`). Do not import or modify.
-- `src/api/de/mod.rs`: Contains an unused `SeqVisitor` struct triggering compiler warnings.
+### 5. [RESOLVED in #12] Dead / Abandoned Files
+Previously, `src/api/blocking/de.rs` (containing leftover debug prints) and an unused `SeqVisitor` struct in `src/api/de/mod.rs` triggered warnings. Both were removed in #12.
 
 ### 6. Strict Compiler Enforcements
 - `src/lib.rs` contains `#![deny(missing_docs)]`. Any new `pub` function, struct, enum, or field exported by the library **must** have documentation comments, or `cargo build` will fail.
 
-### 7. Cargo.toml Typos & Leftovers
-- `Cargo.toml` uses `keyword = [...]` instead of `keywords = [...]` (triggers Cargo warning).
-- `md5` and `hex` dependencies are declared in `Cargo.toml` but never used in `src/`. (Likely planned for legacy pre-6.43 RouterOS MD5 challenge-response authentication).
+### 7. [RESOLVED in #12] Cargo.toml Typos & Leftovers
+Previously, `Cargo.toml` used `keyword = [...]` instead of `keywords = [...]` and declared unused `md5` and `hex` dependencies. Both were cleaned up in #12.
 
 ### 8. [RESOLVED in #7] Panics on Untagged Frames and Non-Second .tag Position (`src/api/listener.rs`)
 Previously, `event_loop` assumed `.tag` was strictly the second word in every sentence, using `tag.split_at(5)` and `id.parse().unwrap()`. Untagged `!done` caused an out-of-bounds panic on `"".split_at(5)`, frames where attributes preceded `.tag` were dropped, and malformed tags caused panics. This was resolved by scanning all sentence words with `strip_prefix(".tag=")`, parsing `u16` fallibly, handling `!fatal` independently, and ignoring untagged or malformed frames without crashing.

@@ -136,6 +136,7 @@ OPTIONS:
 
 SUBCOMMANDS:
     active-users    
+    custom          
     help            Print this message or the help of the given subcommand(s)
     identify        
  ```
@@ -147,14 +148,14 @@ Right now it comes with three subcommands:
   
 ```bash
 $ target/release/mk-client -A 192.168.88.1 --ssl -k -L admin -P "P@ssw0rd" custom --listen "/log/listen"
-2022-09-07T21:38:04.659Z INFO [client::custom] New event:
+2022-09-07T21:38:04.659Z INFO [mk_client::custom] New event:
 {
     ".id": "*1CB36",
     "time": "21:38:04",
     "message": "user admin logged in from 192.168.88.10 via web",
     "topics": "system,info,account",
 }
-2022-09-07T21:38:05.559Z INFO [client::custom] New event:
+2022-09-07T21:38:05.559Z INFO [mk_client::custom] New event:
 {
     "topics": "firewall,info",
     ".id": "*1CB37",
