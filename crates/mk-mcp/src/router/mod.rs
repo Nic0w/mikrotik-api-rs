@@ -120,26 +120,28 @@ impl RouterDriver {
             .collect();
         let attrs = (!wire_refs.is_empty()).then_some(wire_refs.as_slice());
 
-        let mut guard = self.conn.lock().await;
-        if guard.is_none() {
-            *guard = Some(self.connector.connect().await?);
-        }
+        let api = {
+            let mut guard = self.conn.lock().await;
+            if guard.is_none() {
+                *guard = Some(self.connector.connect().await?);
+            }
+            guard.as_ref().expect("connected").clone()
+        };
 
-        let api = guard.as_mut().expect("connected");
         match api.generic_array_call::<Row>(cmd.path(), attrs).await {
             Ok(rows) => Ok(rows),
             Err(ApiError::EndOfStream | ApiError::Io(_)) => {
-                // Connection dropped; clear stale session
-                *guard = None;
-                // Auto-reconnect once if the command is idempotent (SafeRead)
-                if cmd.class() == SafetyClass::SafeRead {
+                let fresh_api = {
+                    let mut guard = self.conn.lock().await;
+                    *guard = None;
+                    if cmd.class() != SafetyClass::SafeRead {
+                        return Err(ApiError::EndOfStream);
+                    }
                     let fresh_api = self.connector.connect().await?;
-                    let res = fresh_api.generic_array_call::<Row>(cmd.path(), attrs).await;
-                    *guard = Some(fresh_api);
-                    res
-                } else {
-                    Err(ApiError::EndOfStream)
-                }
+                    *guard = Some(fresh_api.clone());
+                    fresh_api
+                };
+                fresh_api.generic_array_call::<Row>(cmd.path(), attrs).await
             }
             Err(other) => Err(other),
         }
