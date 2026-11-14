@@ -61,7 +61,7 @@ fn read_bytes<'buf>(cursor: &mut Cursor<&'buf [u8]>, len: u32) -> Result<&'buf [
 
     let remaining = end - start;
 
-    if len > (remaining as u32) {
+    if (len as usize) > remaining {
         return Err(Error::Incomplete);
     }
 
@@ -262,5 +262,20 @@ mod tests {
         assert_eq!(sentence[0], "!re");
         assert_eq!(sentence[1], "=data=\u{FFFD}\u{FFFD}");
         assert_eq!(sentence[2], "");
+    }
+
+    #[test]
+    fn test_read_bytes_bounds() {
+        use super::read_bytes;
+        use crate::api::error::Error;
+
+        let buf = b"hello";
+        let mut cursor = Cursor::new(&buf[..]);
+        assert!(matches!(read_bytes(&mut cursor, 6), Err(Error::Incomplete)));
+        assert_eq!(cursor.position(), 0);
+
+        assert_eq!(read_bytes(&mut cursor, 5).unwrap(), b"hello");
+        assert_eq!(cursor.position(), 5);
+        assert!(matches!(read_bytes(&mut cursor, 1), Err(Error::Incomplete)));
     }
 }
