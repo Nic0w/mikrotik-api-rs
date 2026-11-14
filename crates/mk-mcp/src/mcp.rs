@@ -53,6 +53,9 @@ pub struct ExecArgs {
     /// Query filter words (e.g. ["running=true", "dynamic=false"]).
     #[serde(default)]
     pub query: Vec<String>,
+    /// Ergonomic key-value equality filter (e.g. {"disabled": "false", "running": "true"}).
+    #[serde(default)]
+    pub filter: HashMap<String, String>,
     /// Specific property fields to retrieve (e.g. ["name", "mac-address", "running"]).
     #[serde(default)]
     pub proplist: Vec<String>,
@@ -89,6 +92,45 @@ pub struct PaginatedRows {
     pub message: Option<String>,
     /// Returned data rows.
     pub rows: Vec<Row>,
+}
+
+fn apply_filter_to_command(unchecked: &mut UncheckedCommand, filter: &HashMap<String, String>) {
+    if filter.is_empty() {
+        return;
+    }
+
+    let mut pairs: Vec<(&str, &str)> = filter
+        .iter()
+        .map(|(k, v)| (k.trim_start_matches(['?', '=']), v.as_str()))
+        .collect();
+    pairs.sort_by_key(|(k, _)| *k);
+
+    for (k, v) in pairs {
+        unchecked.query.push(format!("{k}={v}"));
+    }
+}
+
+fn post_filter_rows(
+    mut rows: Vec<Row>,
+    filter: &HashMap<String, String>,
+    proplist: &[String],
+) -> Vec<Row> {
+    if filter.is_empty() {
+        return rows;
+    }
+
+    rows.retain(|row| {
+        filter.iter().all(|(k, v)| {
+            let clean_k = k.trim_start_matches(['?', '=']);
+            if proplist.is_empty() || proplist.iter().any(|p| p == clean_k) {
+                row.get(clean_k) == Some(v)
+            } else {
+                true
+            }
+        })
+    });
+
+    rows
 }
 
 fn format_exec_rows(
@@ -458,10 +500,12 @@ impl MkMcpServer {
         let mut unchecked = UncheckedCommand::new(&command_path);
         unchecked.attributes.extend(args.attributes);
         unchecked.query.extend(args.query);
+        apply_filter_to_command(&mut unchecked, &args.filter);
         unchecked.proplist.extend(args.proplist);
         if args.as_task {
             unchecked.is_streaming = true;
         }
+        let effective_proplist = unchecked.proplist.clone();
 
         let authorized = match self.safety.authorize(unchecked) {
             Ok(auth) => auth,
@@ -501,10 +545,13 @@ impl MkMcpServer {
             }
         } else {
             match self.driver.execute(authorized).await {
-                Ok(rows) => match format_exec_rows(rows, args.limit, args.offset) {
-                    Ok(b) => Ok(CallToolResult::success(vec![b])),
-                    Err(e) => Err(e),
-                },
+                Ok(rows) => {
+                    let filtered = post_filter_rows(rows, &args.filter, &effective_proplist);
+                    match format_exec_rows(filtered, args.limit, args.offset) {
+                        Ok(b) => Ok(CallToolResult::success(vec![b])),
+                        Err(e) => Err(e),
+                    }
+                }
                 Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "Command failed on router: {e}"
                 ))])),
