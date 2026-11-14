@@ -135,3 +135,84 @@ jobs:
       - name: Run functional tests against RouterOS
         run: cargo test --test functional --locked -- --ignored --test-threads=1 --nocapture
 
+  coverage:
+    name: Code Coverage
+    needs: functional-test
+    runs-on: rust
+    concurrency:
+      group: mikrotik-router-functional-tests
+      cancel-in-progress: false
+    env:
+      MIKROTIK_ADDR: ${{ vars.MIKROTIK_TEST_ADDR }}
+      MIKROTIK_USER: ${{ secrets.MIKROTIK_TEST_USER }}
+      MIKROTIK_PASS: ${{ secrets.MIKROTIK_TEST_PASS }}
+      MIKROTIK_CA_CERT: ${{ secrets.MIKROTIK_TEST_CA }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache cargo-llvm-cov binary
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: ${{ runner.os }}-cargo-llvm-cov
+
+      - name: Ensure llvm-tools and cargo-llvm-cov are installed
+        run: |
+          rustup component add llvm-tools-preview
+          if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
+            cargo install cargo-llvm-cov --locked
+          fi
+
+      - name: Configure Test CA certificate
+        if: env.MIKROTIK_CA_CERT != ''
+        run: |
+          CA_DIR="${RUNNER_TEMP:-/tmp}/mikrotik-ca"
+          mkdir -p "$CA_DIR"
+          echo "$MIKROTIK_CA_CERT" > "$CA_DIR/mikrotik-test-ca.crt"
+          echo "MIKROTIK_CA_FILE=$CA_DIR/mikrotik-test-ca.crt" >> "$GITHUB_ENV"
+          echo "MIKROTIK_TLS_CA=$CA_DIR/mikrotik-test-ca.crt" >> "$GITHUB_ENV"
+
+          if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+            cat /etc/ssl/certs/ca-certificates.crt "$CA_DIR/mikrotik-test-ca.crt" > "$CA_DIR/combined-ca.crt"
+            echo "SSL_CERT_FILE=$CA_DIR/combined-ca.crt" >> "$GITHUB_ENV"
+          elif [ -f /etc/ssl/cert.pem ]; then
+            cat /etc/ssl/cert.pem "$CA_DIR/mikrotik-test-ca.crt" > "$CA_DIR/combined-ca.crt"
+            echo "SSL_CERT_FILE=$CA_DIR/combined-ca.crt" >> "$GITHUB_ENV"
+          else
+            echo "SSL_CERT_FILE=$CA_DIR/mikrotik-test-ca.crt" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run test suite with cargo-llvm-cov instrumentation
+        run: |
+          if [ -n "$MIKROTIK_ADDR" ]; then
+            cargo llvm-cov test --no-report --workspace --all-features --locked -- --include-ignored --test-threads=1
+          else
+            cargo llvm-cov test --no-report --workspace --all-features --locked
+          fi
+
+      - name: Print coverage summary and generate HTML report
+        run: |
+          cargo llvm-cov report --summary-only
+          cargo llvm-cov report --summary-only --ignore-filename-regex 'mock_test\.rs|tree-extractor'
+          cargo llvm-cov report --html --output-dir target/llvm-cov --ignore-filename-regex 'mock_test\.rs'
+
+      - name: Upload HTML coverage report
+        uses: actions/upload-artifact@v3-node20
+        with:
+          name: llvm-cov-html
+          path: target/llvm-cov/html
+
