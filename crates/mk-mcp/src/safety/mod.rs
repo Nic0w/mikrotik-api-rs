@@ -381,4 +381,47 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn test_authorized_command_accessors_and_wire_attributes() {
+        let gate = SafetyGate::new(PolicyMode::ReadWrite, RuleClassifier);
+
+        let mut cmd = UncheckedCommand::new("/interface/listen");
+        cmd.proplist = vec!["name".to_string(), "running".to_string()];
+        cmd.query = vec!["?disabled=false".to_string(), "running=true".to_string()];
+        cmd.attributes
+            .insert("interval".to_string(), "1".to_string());
+
+        let auth = gate.authorize(cmd).expect("listen should authorize");
+        assert!(auth.is_streaming());
+        assert_eq!(auth.class(), SafetyClass::SafeRead);
+        assert_eq!(auth.path(), "/interface/listen");
+
+        let wire = auth.to_wire_attributes();
+        assert_eq!(
+            wire[0],
+            ("=.proplist".to_string(), "name,running".to_string())
+        );
+        assert!(wire.contains(&("?disabled=false".to_string(), String::new())));
+        assert!(wire.contains(&("?running=true".to_string(), String::new())));
+        assert!(wire.contains(&("interval".to_string(), "1".to_string())));
+
+        // Also test ConfirmWrites preserves pending command and custom classifier empty reason fallback
+        struct ReasonlessDangerousClassifier;
+        impl Classifier for ReasonlessDangerousClassifier {
+            fn classify(&self, _cmd: &UncheckedCommand) -> Classification {
+                Classification {
+                    class: SafetyClass::DangerousWrite,
+                    reason: None,
+                }
+            }
+        }
+        let custom_gate = SafetyGate::new(PolicyMode::ReadWrite, ReasonlessDangerousClassifier);
+        match custom_gate.authorize(UncheckedCommand::new("/custom/op")) {
+            Err(PolicyStop::Denied { reason, .. }) => {
+                assert!(reason.contains("blocked by safety policy"))
+            }
+            other => panic!("expected Denied, got {other:?}"),
+        }
+    }
 }
