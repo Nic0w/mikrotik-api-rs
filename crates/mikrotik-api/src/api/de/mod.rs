@@ -1432,4 +1432,108 @@ mod tests {
         let collected_fatal: Response<Vec<&str>> = with_fatal.into_iter().collect();
         assert_eq!(collected_fatal, Response::Fatal);
     }
+
+    #[test]
+    fn test_deserialize_active_user_partial_and_dead() {
+        use crate::api::model::ActiveUser;
+
+        // Omitting address, group, and radius (e.g. local/serial console session)
+        let local_login = vec![
+            "!re".to_string(),
+            "=id=*2".to_string(),
+            "=.id=*2".to_string(),
+            "=when=nov/14/2026 15:00:00".to_string(),
+            "=name=admin".to_string(),
+            "=via=console".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            deserialize_sentence::<ActiveUser>(&local_login).unwrap(),
+            Response::Reply(ActiveUser::Active {
+                id: "*2".to_string(),
+                when: "nov/14/2026 15:00:00".to_string(),
+                name: "admin".to_string(),
+                address: None,
+                via: "console".to_string(),
+                group: None,
+                radius: false,
+            })
+        );
+
+        let logout = vec![
+            "!re".to_string(),
+            "=.id=*2".to_string(),
+            "=.dead=true".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            deserialize_sentence::<ActiveUser>(&logout).unwrap(),
+            Response::Reply(ActiveUser::Dead("*2".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_deserialize_interface_change_partial_and_dead() {
+        use crate::api::model::{InterfaceChange, InterfaceMTU};
+
+        let partial_update = vec![
+            "!re".to_string(),
+            "=.id=*1".to_string(),
+            "=name=ether1".to_string(),
+            "=type=ether".to_string(),
+            "=mtu=auto".to_string(),
+            "=actual-mtu=1500".to_string(),
+            "=last-link-up-time=nov/14/2026 15:01:00".to_string(),
+            "=link-downs=2".to_string(),
+            "=running=true".to_string(),
+            "=disabled=false".to_string(),
+            "=comment=wan uplink".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            deserialize_sentence::<InterfaceChange>(&partial_update).unwrap(),
+            Response::Reply(InterfaceChange {
+                id: "*1".to_string(),
+                is_dead: false,
+                name: Some("ether1".to_string()),
+                iface_type: Some("ether".to_string()),
+                mtu: Some(InterfaceMTU::Auto),
+                actual_mtu: Some(1500),
+                last_link_up: Some("nov/14/2026 15:01:00".to_string()),
+                link_downs: Some(2),
+                running: Some(true),
+                slave: None,
+                disabled: Some(false),
+                comment: Some("wan uplink".to_string()),
+            })
+        );
+
+        let deleted = vec![
+            "!re".to_string(),
+            "=.id=*3".to_string(),
+            "=.dead=true".to_string(),
+            "".to_string(),
+        ];
+
+        assert_eq!(
+            deserialize_sentence::<InterfaceChange>(&deleted).unwrap(),
+            Response::Reply(InterfaceChange {
+                id: "*3".to_string(),
+                is_dead: true,
+                name: None,
+                iface_type: None,
+                mtu: None,
+                actual_mtu: None,
+                last_link_up: None,
+                link_downs: None,
+                running: None,
+                slave: None,
+                disabled: None,
+                comment: None,
+            })
+        );
+    }
 }
